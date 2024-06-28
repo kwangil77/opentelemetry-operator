@@ -46,6 +46,9 @@ const sdk = new NodeSDK({
   autoDetectResources: true,
   instrumentations: [
     getNodeAutoInstrumentations({
+      '@opentelemetry/instrumentation-dns': {
+        enabled: false
+      },
       '@opentelemetry/instrumentation-fs': {
         enabled: false
       },
@@ -66,6 +69,9 @@ const sdk = new NodeSDK({
             }
           }
         },
+      },
+      '@opentelemetry/instrumentation-net': {
+        enabled: false
       },
     })
   ],
