@@ -34,13 +34,12 @@ func TestParserForReturns(t *testing.T) {
 		"endpoint": "localhost:9000",
 	})
 	assert.NoError(t, err)
-	assert.Len(t, ports, 1)
-	assert.Equal(t, ports[0].Port, int32(9000))
+	assert.Len(t, ports, 0) // Should use the nop parser
 }
 
 func TestCanRegister(t *testing.T) {
 	const testComponentName = "test"
-	exporters.Register(testComponentName, components.NewSinglePortParser(testComponentName, 9000))
+	exporters.Register(testComponentName, components.NewSinglePortParserBuilder(testComponentName, 9000).MustBuild())
 	assert.True(t, exporters.IsRegistered(testComponentName))
 	parser := exporters.ParserFor(testComponentName)
 	assert.Equal(t, "test", parser.ParserType())

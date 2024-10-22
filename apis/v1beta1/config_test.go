@@ -143,7 +143,7 @@ func TestConfigYaml(t *testing.T) {
 			},
 		},
 		Service: Service{
-			Extensions: &[]string{"addon"},
+			Extensions: []string{"addon"},
 			Telemetry: &AnyConfig{
 				Object: map[string]interface{}{
 					"insights": "yeah!",
@@ -220,11 +220,13 @@ func TestConfigToMetricsPort(t *testing.T) {
 
 	for _, tt := range []struct {
 		desc         string
+		expectedAddr string
 		expectedPort int32
 		config       Service
 	}{
 		{
 			"custom port",
+			"0.0.0.0",
 			9090,
 			Service{
 				Telemetry: &AnyConfig{
@@ -238,6 +240,7 @@ func TestConfigToMetricsPort(t *testing.T) {
 		},
 		{
 			"bad address",
+			"0.0.0.0",
 			8888,
 			Service{
 				Telemetry: &AnyConfig{
@@ -251,6 +254,7 @@ func TestConfigToMetricsPort(t *testing.T) {
 		},
 		{
 			"missing address",
+			"0.0.0.0",
 			8888,
 			Service{
 				Telemetry: &AnyConfig{
@@ -264,6 +268,7 @@ func TestConfigToMetricsPort(t *testing.T) {
 		},
 		{
 			"missing metrics",
+			"0.0.0.0",
 			8888,
 			Service{
 				Telemetry: &AnyConfig{},
@@ -271,14 +276,30 @@ func TestConfigToMetricsPort(t *testing.T) {
 		},
 		{
 			"missing telemetry",
+			"0.0.0.0",
 			8888,
 			Service{},
+		},
+		{
+			"configured telemetry",
+			"1.2.3.4",
+			4567,
+			Service{
+				Telemetry: &AnyConfig{
+					Object: map[string]interface{}{
+						"metrics": map[string]interface{}{
+							"address": "1.2.3.4:4567",
+						},
+					},
+				},
+			},
 		},
 	} {
 		t.Run(tt.desc, func(t *testing.T) {
 			// these are acceptable failures, we return to the collector's default metric port
-			port, err := tt.config.MetricsPort()
+			addr, port, err := tt.config.MetricsEndpoint()
 			assert.NoError(t, err)
+			assert.Equal(t, tt.expectedAddr, addr)
 			assert.Equal(t, tt.expectedPort, port)
 		})
 	}
@@ -304,6 +325,7 @@ func TestConfig_GetEnabledComponents(t *testing.T) {
 					"bar":   struct{}{},
 					"count": struct{}{},
 				},
+				KindExtension: {},
 			},
 		},
 		{
@@ -321,6 +343,7 @@ func TestConfig_GetEnabledComponents(t *testing.T) {
 				KindExporter: {
 					"prometheus": struct{}{},
 				},
+				KindExtension: {},
 			},
 		},
 		{
@@ -339,6 +362,11 @@ func TestConfig_GetEnabledComponents(t *testing.T) {
 					"otlp":       struct{}{},
 					"prometheus": struct{}{},
 				},
+				KindExtension: {
+					"health_check": struct{}{},
+					"pprof":        struct{}{},
+					"zpages":       struct{}{},
+				},
 			},
 		},
 		{
@@ -351,6 +379,9 @@ func TestConfig_GetEnabledComponents(t *testing.T) {
 				KindProcessor: {},
 				KindExporter: {
 					"otlp/auth": struct{}{},
+				},
+				KindExtension: {
+					"oauth2client": struct{}{},
 				},
 			},
 		},
@@ -365,6 +396,7 @@ func TestConfig_GetEnabledComponents(t *testing.T) {
 				KindExporter: {
 					"debug": struct{}{},
 				},
+				KindExtension: {},
 			},
 		},
 		{
@@ -374,6 +406,7 @@ func TestConfig_GetEnabledComponents(t *testing.T) {
 				KindReceiver:  {},
 				KindProcessor: {},
 				KindExporter:  {},
+				KindExtension: {},
 			},
 		},
 	}
@@ -397,12 +430,25 @@ func TestConfig_GetReceiverPorts(t *testing.T) {
 		want    []v1.ServicePort
 		wantErr bool
 	}{
-
+		{
+			name: "k8sevents",
+			file: "testdata/otelcol-k8sevents.yaml",
+			want: []v1.ServicePort{
+				{
+					Name:        "otlp-http",
+					Protocol:    "",
+					AppProtocol: ptr.To("http"),
+					Port:        4318,
+					TargetPort:  intstr.FromInt32(4318),
+				},
+			},
+			wantErr: false, // Silently fail
+		},
 		{
 			name:    "connectors",
 			file:    "testdata/otelcol-connectors.yaml",
 			want:    nil,
-			wantErr: true,
+			wantErr: false, // Silently fail
 		},
 		{
 			name: "couchbase",
@@ -497,25 +543,12 @@ func TestConfig_GetExporterPorts(t *testing.T) {
 					Name: "prometheus",
 					Port: 8889,
 				},
-				{
-					Name: "otlp",
-					Port: 4317,
-				},
-				{
-					Name: "zipkin",
-					Port: 9411,
-				},
 			},
 		},
 		{
 			name: "extensions",
 			file: "testdata/otelcol-extensions.yaml",
-			want: []v1.ServicePort{
-				{
-					Name: "otlp-auth",
-					Port: 4317,
-				},
-			},
+			want: nil,
 		},
 		{
 			name: "filelog",

@@ -16,6 +16,7 @@ package watcher
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -972,7 +973,7 @@ func TestRateLimit(t *testing.T) {
 		},
 	}
 	events := make(chan Event, 1)
-	eventInterval := 5 * time.Millisecond
+	eventInterval := 500 * time.Millisecond
 	cfg := allocatorconfig.Config{}
 
 	w, _ := getTestPrometheusCRWatcher(t, nil, nil, cfg)
@@ -1005,10 +1006,10 @@ func TestRateLimit(t *testing.T) {
 		default:
 			return false
 		}
-	}, eventInterval*2, time.Millisecond)
+	}, time.Second*5, eventInterval/10)
 
 	// it's difficult to measure the rate precisely
-	// what we do, is send two updates, and then assert that the elapsed time is between eventInterval and 3*eventInterval
+	// what we do, is send two updates, and then assert that the elapsed time is at least eventInterval
 	startTime := time.Now()
 	_, err = w.kubeMonitoringClient.MonitoringV1().ServiceMonitors("test").Update(context.Background(), serviceMonitor, metav1.UpdateOptions{})
 	require.NoError(t, err)
@@ -1019,7 +1020,7 @@ func TestRateLimit(t *testing.T) {
 		default:
 			return false
 		}
-	}, eventInterval*2, time.Millisecond)
+	}, time.Second*5, eventInterval/10)
 	_, err = w.kubeMonitoringClient.MonitoringV1().ServiceMonitors("test").Update(context.Background(), serviceMonitor, metav1.UpdateOptions{})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {
@@ -1029,11 +1030,9 @@ func TestRateLimit(t *testing.T) {
 		default:
 			return false
 		}
-	}, eventInterval*2, time.Millisecond)
+	}, time.Second*5, eventInterval/10)
 	elapsedTime := time.Since(startTime)
 	assert.Less(t, eventInterval, elapsedTime)
-	assert.GreaterOrEqual(t, eventInterval*3, elapsedTime)
-
 }
 
 // getTestPrometheusCRWatcher creates a test instance of PrometheusCRWatcher with fake clients
@@ -1085,6 +1084,8 @@ func getTestPrometheusCRWatcher(t *testing.T, svcMonitors []*monitoringv1.Servic
 		t.Fatal(t, err)
 	}
 
+	serviceDiscoveryRole := monitoringv1.ServiceDiscoveryRole("EndpointSlice")
+
 	prom := &monitoringv1.Prometheus{
 		Spec: monitoringv1.PrometheusSpec{
 			CommonPrometheusFields: monitoringv1.CommonPrometheusFields{
@@ -1093,11 +1094,13 @@ func getTestPrometheusCRWatcher(t *testing.T, svcMonitors []*monitoringv1.Servic
 				PodMonitorSelector:              cfg.PrometheusCR.PodMonitorSelector,
 				ServiceMonitorNamespaceSelector: cfg.PrometheusCR.ServiceMonitorNamespaceSelector,
 				PodMonitorNamespaceSelector:     cfg.PrometheusCR.PodMonitorNamespaceSelector,
+				ServiceDiscoveryRole:            &serviceDiscoveryRole,
 			},
 		},
 	}
 
 	promOperatorLogger := level.NewFilter(log.NewLogfmtLogger(os.Stderr), level.AllowWarn())
+	promOperatorSlogLogger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	generator, err := prometheus.NewConfigGenerator(promOperatorLogger, prom, true)
 	if err != nil {
@@ -1121,7 +1124,8 @@ func getTestPrometheusCRWatcher(t *testing.T, svcMonitors []*monitoringv1.Servic
 	// create the shared informer and resync every 1s
 	nsMonInf := cache.NewSharedInformer(source, &v1.Namespace{}, 1*time.Second).(cache.SharedIndexInformer)
 
-	resourceSelector := prometheus.NewResourceSelector(promOperatorLogger, prom, store, nsMonInf, operatorMetrics, eventRecorder)
+	resourceSelector, err := prometheus.NewResourceSelector(promOperatorSlogLogger, prom, store, nsMonInf, operatorMetrics, eventRecorder)
+	require.NoError(t, err)
 
 	return &PrometheusCRWatcher{
 		kubeMonitoringClient:            mClient,

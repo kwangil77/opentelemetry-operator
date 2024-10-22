@@ -23,16 +23,16 @@ import (
 )
 
 const (
-	envPythonPath                      = "PYTHONPATH"
-	envOtelTracesExporter              = "OTEL_TRACES_EXPORTER"
-	envOtelMetricsExporter             = "OTEL_METRICS_EXPORTER"
-	envOtelExporterOTLPTracesProtocol  = "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"
-	envOtelExporterOTLPMetricsProtocol = "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL"
-	pythonPathPrefix                   = "/otel-auto-instrumentation-python/opentelemetry/instrumentation/auto_instrumentation"
-	pythonPathSuffix                   = "/otel-auto-instrumentation-python"
-	pythonInstrMountPath               = "/otel-auto-instrumentation-python"
-	pythonVolumeName                   = volumeName + "-python"
-	pythonInitContainerName            = initContainerName + "-python"
+	envPythonPath               = "PYTHONPATH"
+	envOtelTracesExporter       = "OTEL_TRACES_EXPORTER"
+	envOtelMetricsExporter      = "OTEL_METRICS_EXPORTER"
+	envOtelLogsExporter         = "OTEL_LOGS_EXPORTER"
+	envOtelExporterOTLPProtocol = "OTEL_EXPORTER_OTLP_PROTOCOL"
+	pythonPathPrefix            = "/otel-auto-instrumentation-python/opentelemetry/instrumentation/auto_instrumentation"
+	pythonPathSuffix            = "/otel-auto-instrumentation-python"
+	pythonInstrMountPath        = "/otel-auto-instrumentation-python"
+	pythonVolumeName            = volumeName + "-python"
+	pythonInitContainerName     = initContainerName + "-python"
 )
 
 func injectPythonSDK(pythonSpec v1alpha1.Python, pod corev1.Pod, index int) (corev1.Pod, error) {
@@ -62,7 +62,16 @@ func injectPythonSDK(pythonSpec v1alpha1.Python, pod corev1.Pod, index int) (cor
 		container.Env[idx].Value = fmt.Sprintf("%s:%s:%s", pythonPathPrefix, container.Env[idx].Value, pythonPathSuffix)
 	}
 
-	// Set OTEL_TRACES_EXPORTER to HTTP exporter if not set by user because it is what our autoinstrumentation supports.
+	// Set OTEL_EXPORTER_OTLP_PROTOCOL to http/protobuf if not set by user because it is what our autoinstrumentation supports.
+	idx = getIndexOfEnv(container.Env, envOtelExporterOTLPProtocol)
+	if idx == -1 {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  envOtelExporterOTLPProtocol,
+			Value: "http/protobuf",
+		})
+	}
+
+	// Set OTEL_TRACES_EXPORTER to otlp exporter if not set by user because it is what our autoinstrumentation supports.
 	idx = getIndexOfEnv(container.Env, envOtelTracesExporter)
 	if idx == -1 {
 		container.Env = append(container.Env, corev1.EnvVar{
@@ -71,16 +80,7 @@ func injectPythonSDK(pythonSpec v1alpha1.Python, pod corev1.Pod, index int) (cor
 		})
 	}
 
-	// Set OTEL_EXPORTER_OTLP_TRACES_PROTOCOL to http/protobuf if not set by user because it is what our autoinstrumentation supports.
-	idx = getIndexOfEnv(container.Env, envOtelExporterOTLPTracesProtocol)
-	if idx == -1 {
-		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  envOtelExporterOTLPTracesProtocol,
-			Value: "http/protobuf",
-		})
-	}
-
-	// Set OTEL_METRICS_EXPORTER to HTTP exporter if not set by user because it is what our autoinstrumentation supports.
+	// Set OTEL_METRICS_EXPORTER to otlp exporter if not set by user because it is what our autoinstrumentation supports.
 	idx = getIndexOfEnv(container.Env, envOtelMetricsExporter)
 	if idx == -1 {
 		container.Env = append(container.Env, corev1.EnvVar{
@@ -89,12 +89,12 @@ func injectPythonSDK(pythonSpec v1alpha1.Python, pod corev1.Pod, index int) (cor
 		})
 	}
 
-	// Set OTEL_EXPORTER_OTLP_METRICS_PROTOCOL to http/protobuf if not set by user because it is what our autoinstrumentation supports.
-	idx = getIndexOfEnv(container.Env, envOtelExporterOTLPMetricsProtocol)
+	// Set OTEL_LOGS_EXPORTER to otlp exporter if not set by user because it is what our autoinstrumentation supports.
+	idx = getIndexOfEnv(container.Env, envOtelLogsExporter)
 	if idx == -1 {
 		container.Env = append(container.Env, corev1.EnvVar{
-			Name:  envOtelExporterOTLPMetricsProtocol,
-			Value: "http/protobuf",
+			Name:  envOtelLogsExporter,
+			Value: "otlp",
 		})
 	}
 

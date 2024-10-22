@@ -99,6 +99,7 @@ func TestOpenTelemetryCollectorReconciler_Reconcile(t *testing.T) {
 	deploymentExtraPorts.Annotations = map[string]string{
 		"new-annotation": "new-value",
 	}
+	baseOTLPParams := testCollectorAssertNoErr(t, "test-otlp", "", otlpTestFile)
 	ingressParams := testCollectorAssertNoErr(t, "test-ingress", "", testFileIngress)
 	ingressParams.Spec.Ingress.Type = "ingress"
 	updatedIngressParams := testCollectorAssertNoErr(t, "test-ingress", "", testFileIngress)
@@ -171,7 +172,9 @@ func TestOpenTelemetryCollectorReconciler_Reconcile(t *testing.T) {
 							exists, err = populateObjectIfExists(t, sa, namespacedObjectName(naming.ServiceAccount(params.Name), params.Namespace))
 							assert.NoError(t, err)
 							assert.True(t, exists)
-							assert.Equal(t, map[string]string{annotationName: "true"}, sa.Annotations)
+							assert.Equal(t, map[string]string{
+								annotationName: "true",
+							}, sa.Annotations)
 							saPatch := sa.DeepCopy()
 							saPatch.Annotations["user-defined-annotation"] = "value"
 							err = k8sClient.Patch(ctx, saPatch, client.MergeFrom(sa))
@@ -212,7 +215,46 @@ func TestOpenTelemetryCollectorReconciler_Reconcile(t *testing.T) {
 							exists, err = populateObjectIfExists(t, sa, namespacedObjectName(naming.ServiceAccount(params.Name), params.Namespace))
 							assert.NoError(t, err)
 							assert.True(t, exists)
-							assert.Equal(t, map[string]string{annotationName: "true", "user-defined-annotation": "value", "new-annotation": "new-value"}, sa.Annotations)
+							assert.Equal(t, map[string]string{
+								annotationName:            "true",
+								"user-defined-annotation": "value",
+								"new-annotation":          "new-value",
+							}, sa.Annotations)
+						},
+					},
+					wantErr:     assert.NoError,
+					validateErr: assert.NoError,
+				},
+			},
+		},
+
+		{
+			name: "otlp receiver collector",
+			args: args{
+				params:  baseOTLPParams,
+				updates: []v1alpha1.OpenTelemetryCollector{},
+			},
+			want: []want{
+				{
+					result: controllerruntime.Result{},
+					checks: []check[v1alpha1.OpenTelemetryCollector]{
+						func(t *testing.T, params v1alpha1.OpenTelemetryCollector) {
+							d := appsv1.StatefulSet{}
+							exists, err := populateObjectIfExists(t, &d, namespacedObjectName(naming.Collector(params.Name), params.Namespace))
+							assert.NoError(t, err)
+							assert.True(t, exists)
+							assert.Equal(t, int32(1), *d.Spec.Replicas)
+							svc := &v1.Service{}
+							exists, err = populateObjectIfExists(t, svc, namespacedObjectName(naming.Service(params.Name), params.Namespace))
+							assert.NoError(t, err)
+							assert.True(t, exists)
+							assert.Equal(t, svc.Spec.Selector, map[string]string{
+								"app.kubernetes.io/component":  "opentelemetry-collector",
+								"app.kubernetes.io/instance":   "default.test-otlp",
+								"app.kubernetes.io/managed-by": "opentelemetry-operator",
+								"app.kubernetes.io/part-of":    "opentelemetry",
+							})
+							assert.Len(t, svc.Spec.Ports, 4)
 						},
 					},
 					wantErr:     assert.NoError,
@@ -374,8 +416,8 @@ func TestOpenTelemetryCollectorReconciler_Reconcile(t *testing.T) {
 		{
 			name: "policy v1 deployment collector",
 			args: args{
-				params:  testCollectorWithPDB(1, 0),
-				updates: []v1alpha1.OpenTelemetryCollector{testCollectorWithPDB(0, 1)},
+				params:  testCollectorWithModeAndReplicas("policytest", v1alpha1.ModeDeployment, 3),
+				updates: []v1alpha1.OpenTelemetryCollector{testCollectorWithPDB(1, 0)},
 			},
 			want: []want{
 				{
@@ -385,8 +427,8 @@ func TestOpenTelemetryCollectorReconciler_Reconcile(t *testing.T) {
 							actual := policyV1.PodDisruptionBudget{}
 							exists, pdbErr := populateObjectIfExists(t, &actual, namespacedObjectName(naming.HorizontalPodAutoscaler(params.Name), params.Namespace))
 							assert.NoError(t, pdbErr)
-							assert.Equal(t, int32(1), actual.Spec.MinAvailable.IntVal)
-							assert.Nil(t, actual.Spec.MaxUnavailable)
+							assert.Equal(t, int32(1), actual.Spec.MaxUnavailable.IntVal)
+							assert.Nil(t, actual.Spec.MinAvailable)
 							assert.True(t, exists)
 						},
 					},
@@ -400,8 +442,8 @@ func TestOpenTelemetryCollectorReconciler_Reconcile(t *testing.T) {
 							actual := policyV1.PodDisruptionBudget{}
 							exists, pdbErr := populateObjectIfExists(t, &actual, namespacedObjectName(naming.HorizontalPodAutoscaler(params.Name), params.Namespace))
 							assert.NoError(t, pdbErr)
-							assert.Nil(t, actual.Spec.MinAvailable)
-							assert.Equal(t, int32(1), actual.Spec.MaxUnavailable.IntVal)
+							assert.Nil(t, actual.Spec.MaxUnavailable)
+							assert.Equal(t, int32(1), actual.Spec.MinAvailable.IntVal)
 							assert.True(t, exists)
 						},
 					},

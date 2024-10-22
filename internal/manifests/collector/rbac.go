@@ -19,35 +19,30 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests"
-	"github.com/open-telemetry/opentelemetry-operator/internal/manifests/collector/adapters"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests/manifestutils"
 	"github.com/open-telemetry/opentelemetry-operator/internal/naming"
 )
 
 func ClusterRole(params manifests.Params) (*rbacv1.ClusterRole, error) {
-	confStr, err := params.OtelCol.Spec.Config.Yaml()
+	rules, err := params.OtelCol.Spec.Config.GetAllRbacRules(params.Log)
 	if err != nil {
 		return nil, err
-	}
-
-	configFromString, err := adapters.ConfigFromString(confStr)
-	if err != nil {
-		params.Log.Error(err, "couldn't extract the configuration from the context")
-		return nil, nil
-	}
-	rules := adapters.ConfigToRBAC(params.Log, configFromString)
-
-	if len(rules) == 0 {
+	} else if len(rules) == 0 {
 		return nil, nil
 	}
 
 	name := naming.ClusterRole(params.OtelCol.Name, params.OtelCol.Namespace)
 	labels := manifestutils.Labels(params.OtelCol.ObjectMeta, name, params.OtelCol.Spec.Image, ComponentOpenTelemetryCollector, params.Config.LabelsFilter())
 
+	annotations, err := manifestutils.Annotations(params.OtelCol, params.Config.AnnotationsFilter())
+	if err != nil {
+		return nil, err
+	}
+
 	return &rbacv1.ClusterRole{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Annotations: params.OtelCol.Annotations,
+			Annotations: annotations,
 			Labels:      labels,
 		},
 		Rules: rules,
@@ -55,28 +50,25 @@ func ClusterRole(params manifests.Params) (*rbacv1.ClusterRole, error) {
 }
 
 func ClusterRoleBinding(params manifests.Params) (*rbacv1.ClusterRoleBinding, error) {
-	confStr, err := params.OtelCol.Spec.Config.Yaml()
+	rules, err := params.OtelCol.Spec.Config.GetAllRbacRules(params.Log)
 	if err != nil {
 		return nil, err
-	}
-	configFromString, err := adapters.ConfigFromString(confStr)
-	if err != nil {
-		params.Log.Error(err, "couldn't extract the configuration from the context")
-		return nil, nil
-	}
-	rules := adapters.ConfigToRBAC(params.Log, configFromString)
-
-	if len(rules) == 0 {
+	} else if len(rules) == 0 {
 		return nil, nil
 	}
 
 	name := naming.ClusterRoleBinding(params.OtelCol.Name, params.OtelCol.Namespace)
 	labels := manifestutils.Labels(params.OtelCol.ObjectMeta, name, params.OtelCol.Spec.Image, ComponentOpenTelemetryCollector, params.Config.LabelsFilter())
 
+	annotations, err := manifestutils.Annotations(params.OtelCol, params.Config.AnnotationsFilter())
+	if err != nil {
+		return nil, err
+	}
+
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
-			Annotations: params.OtelCol.Annotations,
+			Annotations: annotations,
 			Labels:      labels,
 		},
 		Subjects: []rbacv1.Subject{

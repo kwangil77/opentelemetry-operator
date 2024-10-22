@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package v1beta1
+package v1beta1_test
 
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 
@@ -35,8 +36,12 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	kubeTesting "k8s.io/client-go/testing"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/open-telemetry/opentelemetry-operator/apis/v1beta1"
 	"github.com/open-telemetry/opentelemetry-operator/internal/config"
+	"github.com/open-telemetry/opentelemetry-operator/internal/manifests"
+	collectorManifests "github.com/open-telemetry/opentelemetry-operator/internal/manifests/collector"
 	"github.com/open-telemetry/opentelemetry-operator/internal/rbac"
 )
 
@@ -46,23 +51,24 @@ var (
 
 func TestValidate(t *testing.T) {
 	tests := []struct {
-		name      string
-		collector OpenTelemetryCollector
-		warnings  []string
-		err       string
+		name          string
+		collector     v1beta1.OpenTelemetryCollector
+		warnings      []string
+		err           string
+		shouldFailSar bool
 	}{
 		{
 			name: "Test ",
-			collector: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Config: Config{
-						Processors: &AnyConfig{
+			collector: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Config: v1beta1.Config{
+						Processors: &v1beta1.AnyConfig{
 							Object: map[string]interface{}{
 								"batch": nil,
 								"foo":   nil,
 							},
 						},
-						Extensions: &AnyConfig{
+						Extensions: &v1beta1.AnyConfig{
 							Object: map[string]interface{}{
 								"foo": nil,
 							},
@@ -76,11 +82,43 @@ func TestValidate(t *testing.T) {
 			},
 		},
 	}
+
+	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+		var warnings admission.Warnings
+		cfg := config.New(
+			config.WithCollectorImage("default-collector"),
+			config.WithTargetAllocatorImage("default-ta-allocator"),
+		)
+		params := manifests.Params{
+			Log:     logr.Discard(),
+			Config:  cfg,
+			OtelCol: collector,
+		}
+		_, err := collectorManifests.Build(params)
+		if err != nil {
+			warnings = append(warnings, err.Error())
+			return warnings
+		}
+		return nil
+	}
+
 	for _, tt := range tests {
-		webhook := CollectorWebhook{}
+		test := tt
+		webhook := v1beta1.NewCollectorWebhook(
+			logr.Discard(),
+			testScheme,
+			config.New(
+				config.WithCollectorImage("collector:v0.0.0"),
+				config.WithTargetAllocatorImage("ta:v0.0.0"),
+			),
+			getReviewer(test.shouldFailSar),
+			nil,
+			bv,
+			nil,
+		)
 		t.Run(tt.name, func(t *testing.T) {
 			tt := tt
-			warnings, err := webhook.validate(context.Background(), &tt.collector)
+			warnings, err := webhook.Validate(context.Background(), &tt.collector)
 			if tt.err == "" {
 				require.NoError(t, err)
 			} else {
@@ -96,138 +134,171 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 	five := int32(5)
 	defaultCPUTarget := int32(90)
 
-	if err := AddToScheme(testScheme); err != nil {
+	if err := v1beta1.AddToScheme(testScheme); err != nil {
 		fmt.Printf("failed to register scheme: %v", err)
 		os.Exit(1)
 	}
 
 	tests := []struct {
-		name     string
-		otelcol  OpenTelemetryCollector
-		expected OpenTelemetryCollector
+		name          string
+		otelcol       v1beta1.OpenTelemetryCollector
+		expected      v1beta1.OpenTelemetryCollector
+		shouldFailSar bool
 	}{
 		{
-			name:    "all fields default",
-			otelcol: OpenTelemetryCollector{},
-			expected: OpenTelemetryCollector{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+			name: "update config defaults",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Config: func() v1beta1.Config {
+						const input = `{"receivers":{"otlp":{"protocols":{"grpc":null,"http":null}}},"exporters":{"debug":null},"service":{"pipelines":{"traces":{"receivers":["otlp"],"exporters":["debug"]}}}}`
+						var cfg v1beta1.Config
+						require.NoError(t, yaml.Unmarshal([]byte(input), &cfg))
+						return cfg
+					}(),
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
-						ManagementState: ManagementStateManaged,
+			},
+			expected: v1beta1.OpenTelemetryCollector{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{},
+				},
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						ManagementState: v1beta1.ManagementStateManaged,
 						Replicas:        &one,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
 					},
-					Mode:            ModeDeployment,
-					UpgradeStrategy: UpgradeStrategyAutomatic,
+					Mode:            v1beta1.ModeDeployment,
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
+					Config: func() v1beta1.Config {
+						const input = `{"receivers":{"otlp":{"protocols":{"grpc":{"endpoint":"0.0.0.0:4317"},"http":{"endpoint":"0.0.0.0:4318"}}}},"exporters":{"debug":null},"service":{"telemetry":{"metrics":{"address":"0.0.0.0:8888"}},"pipelines":{"traces":{"receivers":["otlp"],"exporters":["debug"]}}}}`
+						var cfg v1beta1.Config
+						require.NoError(t, yaml.Unmarshal([]byte(input), &cfg))
+						return cfg
+					}(),
+				},
+			},
+		},
+		{
+			name: "update config defaults, leave other fields alone",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Config: func() v1beta1.Config {
+						const input = `{"receivers":{"otlp":{"protocols":{"grpc":{"headers":{"example":"another"}},"http":{"endpoint":"0.0.0.0:4000"}}}},"exporters":{"debug":null},"service":{"telemetry":{"metrics":{"address":"1.2.3.4:7654"}},"pipelines":{"traces":{"receivers":["otlp"],"exporters":["debug"]}}}}`
+						var cfg v1beta1.Config
+						require.NoError(t, yaml.Unmarshal([]byte(input), &cfg))
+						return cfg
+					}(),
+				},
+			},
+			expected: v1beta1.OpenTelemetryCollector{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{},
+				},
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						ManagementState: v1beta1.ManagementStateManaged,
+						Replicas:        &one,
+					},
+					Mode:            v1beta1.ModeDeployment,
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
+					Config: func() v1beta1.Config {
+						const input = `{"receivers":{"otlp":{"protocols":{"grpc":{"endpoint":"0.0.0.0:4317","headers":{"example":"another"}},"http":{"endpoint":"0.0.0.0:4000"}}}},"exporters":{"debug":null},"service":{"telemetry":{"metrics":{"address":"1.2.3.4:7654"}},"pipelines":{"traces":{"receivers":["otlp"],"exporters":["debug"]}}}}`
+						var cfg v1beta1.Config
+						require.NoError(t, yaml.Unmarshal([]byte(input), &cfg))
+						return cfg
+					}(),
+				},
+			},
+		},
+		{
+			name:    "all fields default",
+			otelcol: v1beta1.OpenTelemetryCollector{},
+			expected: v1beta1.OpenTelemetryCollector{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{},
+				},
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						ManagementState: v1beta1.ManagementStateManaged,
+						Replicas:        &one,
+					},
+					Mode:            v1beta1.ModeDeployment,
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
 				},
 			},
 		},
 		{
 			name: "provided values in spec",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode:            ModeSidecar,
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode:            v1beta1.ModeSidecar,
 					UpgradeStrategy: "adhoc",
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas: &five,
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode:            ModeSidecar,
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode:            v1beta1.ModeSidecar,
 					UpgradeStrategy: "adhoc",
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &five,
-						ManagementState: ManagementStateManaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						ManagementState: v1beta1.ManagementStateManaged,
 					},
 				},
 			},
 		},
 		{
 			name: "doesn't override unmanaged",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode:            ModeSidecar,
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode:            v1beta1.ModeSidecar,
 					UpgradeStrategy: "adhoc",
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &five,
-						ManagementState: ManagementStateUnmanaged,
+						ManagementState: v1beta1.ManagementStateUnmanaged,
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode:            ModeSidecar,
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode:            v1beta1.ModeSidecar,
 					UpgradeStrategy: "adhoc",
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &five,
-						ManagementState: ManagementStateUnmanaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						ManagementState: v1beta1.ManagementStateUnmanaged,
 					},
 				},
 			},
 		},
 		{
 			name: "Setting Autoscaler MaxReplicas",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &five,
 						MinReplicas: &one,
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode:            ModeDeployment,
-					UpgradeStrategy: UpgradeStrategyAutomatic,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode:            v1beta1.ModeDeployment,
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &one,
-						ManagementState: ManagementStateManaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						ManagementState: v1beta1.ManagementStateManaged,
 					},
-					Autoscaler: &AutoscalerSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						TargetCPUUtilization: &defaultCPUTarget,
 						MaxReplicas:          &five,
 						MinReplicas:          &one,
@@ -237,49 +308,41 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 		},
 		{
 			name: "Missing route termination",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					Ingress: Ingress{
-						Type: IngressTypeRoute,
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					Ingress: v1beta1.Ingress{
+						Type: v1beta1.IngressTypeRoute,
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
-						ManagementState: ManagementStateManaged,
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						ManagementState: v1beta1.ManagementStateManaged,
 						Replicas:        &one,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
+					},
+					Ingress: v1beta1.Ingress{
+						Type: v1beta1.IngressTypeRoute,
+						Route: v1beta1.OpenShiftRoute{
+							Termination: v1beta1.TLSRouteTerminationTypeEdge,
 						},
 					},
-					Ingress: Ingress{
-						Type: IngressTypeRoute,
-						Route: OpenShiftRoute{
-							Termination: TLSRouteTerminationTypeEdge,
-						},
-					},
-					UpgradeStrategy: UpgradeStrategyAutomatic,
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
 				},
 			},
 		},
 		{
 			name: "Defined PDB for collector",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						PodDisruptionBudget: &v1beta1.PodDisruptionBudgetSpec{
 							MinAvailable: &intstr.IntOrString{
 								Type:   intstr.String,
 								StrVal: "10%",
@@ -288,37 +351,35 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &one,
-						ManagementState: ManagementStateManaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
+						ManagementState: v1beta1.ManagementStateManaged,
+						PodDisruptionBudget: &v1beta1.PodDisruptionBudgetSpec{
 							MinAvailable: &intstr.IntOrString{
 								Type:   intstr.String,
 								StrVal: "10%",
 							},
 						},
 					},
-					UpgradeStrategy: UpgradeStrategyAutomatic,
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
 				},
 			},
 		},
 		{
 			name: "Defined PDB for target allocator",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					TargetAllocator: TargetAllocatorEmbedded{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
-						AllocationStrategy: TargetAllocatorAllocationStrategyConsistentHashing,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyConsistentHashing,
+						PodDisruptionBudget: &v1beta1.PodDisruptionBudgetSpec{
 							MinAvailable: &intstr.IntOrString{
 								Type:   intstr.String,
 								StrVal: "10%",
@@ -327,30 +388,22 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &one,
-						ManagementState: ManagementStateManaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						ManagementState: v1beta1.ManagementStateManaged,
 					},
-					UpgradeStrategy: UpgradeStrategyAutomatic,
-					TargetAllocator: TargetAllocatorEmbedded{
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
 						Replicas:           &one,
-						AllocationStrategy: TargetAllocatorAllocationStrategyConsistentHashing,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyConsistentHashing,
+						PodDisruptionBudget: &v1beta1.PodDisruptionBudgetSpec{
 							MinAvailable: &intstr.IntOrString{
 								Type:   intstr.String,
 								StrVal: "10%",
@@ -362,13 +415,13 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 		},
 		{
 			name: "Defined PDB for target allocator per-node",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					TargetAllocator: TargetAllocatorEmbedded{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
-						AllocationStrategy: TargetAllocatorAllocationStrategyPerNode,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyPerNode,
+						PodDisruptionBudget: &v1beta1.PodDisruptionBudgetSpec{
 							MinAvailable: &intstr.IntOrString{
 								Type:   intstr.String,
 								StrVal: "10%",
@@ -377,30 +430,22 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &one,
-						ManagementState: ManagementStateManaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						ManagementState: v1beta1.ManagementStateManaged,
 					},
-					UpgradeStrategy: UpgradeStrategyAutomatic,
-					TargetAllocator: TargetAllocatorEmbedded{
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
 						Replicas:           &one,
-						AllocationStrategy: TargetAllocatorAllocationStrategyPerNode,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyPerNode,
+						PodDisruptionBudget: &v1beta1.PodDisruptionBudgetSpec{
 							MinAvailable: &intstr.IntOrString{
 								Type:   intstr.String,
 								StrVal: "10%",
@@ -412,102 +457,106 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 		},
 		{
 			name: "Undefined PDB for target allocator and consistent-hashing strategy",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					TargetAllocator: TargetAllocatorEmbedded{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
 						Replicas:           &one,
-						AllocationStrategy: TargetAllocatorAllocationStrategyConsistentHashing,
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyConsistentHashing,
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &one,
-						ManagementState: ManagementStateManaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						ManagementState: v1beta1.ManagementStateManaged,
 					},
-					UpgradeStrategy: UpgradeStrategyAutomatic,
-					TargetAllocator: TargetAllocatorEmbedded{
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
 						Replicas:           &one,
-						AllocationStrategy: TargetAllocatorAllocationStrategyConsistentHashing,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyConsistentHashing,
 					},
 				},
 			},
 		},
 		{
 			name: "Undefined PDB for target allocator and not consistent-hashing strategy",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					TargetAllocator: TargetAllocatorEmbedded{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
-						AllocationStrategy: TargetAllocatorAllocationStrategyLeastWeighted,
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyLeastWeighted,
 					},
 				},
 			},
-			expected: OpenTelemetryCollector{
+			expected: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app.kubernetes.io/managed-by": "opentelemetry-operator",
-					},
+					Labels: map[string]string{},
 				},
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas:        &one,
-						ManagementState: ManagementStateManaged,
-						PodDisruptionBudget: &PodDisruptionBudgetSpec{
-							MaxUnavailable: &intstr.IntOrString{
-								Type:   intstr.Int,
-								IntVal: 1,
-							},
-						},
+						ManagementState: v1beta1.ManagementStateManaged,
 					},
-					UpgradeStrategy: UpgradeStrategyAutomatic,
-					TargetAllocator: TargetAllocatorEmbedded{
+					UpgradeStrategy: v1beta1.UpgradeStrategyAutomatic,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
 						Replicas:           &one,
-						AllocationStrategy: TargetAllocatorAllocationStrategyLeastWeighted,
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyLeastWeighted,
 					},
 				},
 			},
 		},
 	}
 
+	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+		var warnings admission.Warnings
+		cfg := config.New(
+			config.WithCollectorImage("default-collector"),
+			config.WithTargetAllocatorImage("default-ta-allocator"),
+		)
+		params := manifests.Params{
+			Log:     logr.Discard(),
+			Config:  cfg,
+			OtelCol: collector,
+		}
+		_, err := collectorManifests.Build(params)
+		if err != nil {
+			warnings = append(warnings, err.Error())
+			return warnings
+		}
+		return nil
+	}
+
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			cvw := &CollectorWebhook{
-				logger: logr.Discard(),
-				scheme: testScheme,
-				cfg: config.New(
+			cvw := v1beta1.NewCollectorWebhook(
+				logr.Discard(),
+				testScheme,
+				config.New(
 					config.WithCollectorImage("collector:v0.0.0"),
 					config.WithTargetAllocatorImage("ta:v0.0.0"),
 				),
-			}
+				getReviewer(test.shouldFailSar),
+				nil,
+				bv,
+				nil,
+			)
 			ctx := context.Background()
 			err := cvw.Default(ctx, &test.otelcol)
+			if test.expected.Spec.Config.Service.Telemetry == nil {
+				assert.NoError(t, test.expected.Spec.Config.Service.ApplyDefaults(), "could not apply defaults")
+			}
 			assert.NoError(t, err)
 			assert.Equal(t, test.expected, test.otelcol)
 		})
@@ -537,30 +586,31 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 	one := int32(1)
 	three := int32(3)
 	five := int32(5)
+	maxInt := int32(math.MaxInt32)
 
-	cfg := Config{}
+	cfg := v1beta1.Config{}
 	err := yaml.Unmarshal([]byte(cfgYaml), &cfg)
 	require.NoError(t, err)
 
 	tests := []struct { //nolint:govet
 		name             string
-		otelcol          OpenTelemetryCollector
+		otelcol          v1beta1.OpenTelemetryCollector
 		expectedErr      string
 		expectedWarnings []string
 		shouldFailSar    bool
 	}{
 		{
 			name:    "valid empty spec",
-			otelcol: OpenTelemetryCollector{},
+			otelcol: v1beta1.OpenTelemetryCollector{},
 		},
 		{
 			name: "valid full spec",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeStatefulSet,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeStatefulSet,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas: &three,
-						Ports: []PortsSpec{
+						Ports: []v1beta1.PortsSpec{
 							{
 								ServicePort: v1.ServicePort{
 									Name: "port1",
@@ -576,7 +626,7 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 							},
 						},
 					},
-					Autoscaler: &AutoscalerSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MinReplicas: &one,
 						MaxReplicas: &five,
 						Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
@@ -590,7 +640,7 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 						TargetCPUUtilization: &five,
 					},
 					UpgradeStrategy: "adhoc",
-					TargetAllocator: TargetAllocatorEmbedded{
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled: true,
 					},
 					Config: cfg,
@@ -600,12 +650,12 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		{
 			name:          "prom CR admissions warning",
 			shouldFailSar: true, // force failure
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeStatefulSet,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeStatefulSet,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas: &three,
-						Ports: []PortsSpec{
+						Ports: []v1beta1.PortsSpec{
 							{
 								ServicePort: v1.ServicePort{
 									Name: "port1",
@@ -621,7 +671,7 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 							},
 						},
 					},
-					Autoscaler: &AutoscalerSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MinReplicas: &one,
 						MaxReplicas: &five,
 						Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
@@ -635,9 +685,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 						TargetCPUUtilization: &five,
 					},
 					UpgradeStrategy: "adhoc",
-					TargetAllocator: TargetAllocatorEmbedded{
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:      true,
-						PrometheusCR: TargetAllocatorPrometheusCR{Enabled: true},
+						PrometheusCR: v1beta1.TargetAllocatorPrometheusCR{Enabled: true},
 					},
 					Config: cfg,
 				},
@@ -660,13 +710,13 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		{
 			name:          "prom CR no admissions warning",
 			shouldFailSar: false, // force SAR okay
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode:            ModeStatefulSet,
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode:            v1beta1.ModeStatefulSet,
 					UpgradeStrategy: "adhoc",
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas: &three,
-						Ports: []PortsSpec{
+						Ports: []v1beta1.PortsSpec{
 							{
 								ServicePort: v1.ServicePort{
 									Name: "port1",
@@ -682,7 +732,7 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 							},
 						},
 					},
-					Autoscaler: &AutoscalerSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
 							ScaleDown: &autoscalingv2.HPAScalingRules{
 								StabilizationWindowSeconds: &three,
@@ -693,9 +743,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 						},
 						TargetCPUUtilization: &five,
 					},
-					TargetAllocator: TargetAllocatorEmbedded{
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:      true,
-						PrometheusCR: TargetAllocatorPrometheusCR{Enabled: true},
+						PrometheusCR: v1beta1.TargetAllocatorPrometheusCR{Enabled: true},
 					},
 					Config: cfg,
 				},
@@ -703,10 +753,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid mode with volume claim templates",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeSidecar,
-					StatefulSetCommonFields: StatefulSetCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeSidecar,
+					StatefulSetCommonFields: v1beta1.StatefulSetCommonFields{
 						VolumeClaimTemplates: []v1.PersistentVolumeClaim{{}, {}},
 					},
 				},
@@ -714,11 +764,26 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 			expectedErr: "does not support the attribute 'volumeClaimTemplates'",
 		},
 		{
+			name: "invalid mode with persistentVolumeClaimRetentionPolicy",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeSidecar,
+					StatefulSetCommonFields: v1beta1.StatefulSetCommonFields{
+						PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+							WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+							WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+						},
+					},
+				},
+			},
+			expectedErr: "does not support the attribute 'persistentVolumeClaimRetentionPolicy'",
+		},
+		{
 			name: "invalid mode with tolerations",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeSidecar,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeSidecar,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Tolerations: []v1.Toleration{{}, {}},
 					},
 				},
@@ -727,10 +792,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid mode with target allocator",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
-					TargetAllocator: TargetAllocatorEmbedded{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled: true,
 					},
 				},
@@ -739,10 +804,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid target allocator config",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeStatefulSet,
-					TargetAllocator: TargetAllocatorEmbedded{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeStatefulSet,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled: true,
 					},
 				},
@@ -751,12 +816,12 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid target allocation strategy",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDaemonSet,
-					TargetAllocator: TargetAllocatorEmbedded{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDaemonSet,
+					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled:            true,
-						AllocationStrategy: TargetAllocatorAllocationStrategyLeastWeighted,
+						AllocationStrategy: v1beta1.TargetAllocatorAllocationStrategyLeastWeighted,
 					},
 				},
 			},
@@ -764,10 +829,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid port name",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
-						Ports: []PortsSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						Ports: []v1beta1.PortsSpec{
 							{
 								ServicePort: v1.ServicePort{
 									// this port name contains a non alphanumeric character, which is invalid.
@@ -784,10 +849,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid port name, too long",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
-						Ports: []PortsSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						Ports: []v1beta1.PortsSpec{
 							{
 								ServicePort: v1.ServicePort{
 									Name: "aaaabbbbccccdddd", // len: 16, too long
@@ -802,10 +867,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid port num",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
-						Ports: []PortsSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						Ports: []v1beta1.PortsSpec{
 							{
 								ServicePort: v1.ServicePort{
 									Name: "aaaabbbbccccddd", // len: 15
@@ -820,9 +885,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid max replicas",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &zero,
 					},
 				},
@@ -831,12 +896,12 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid replicas, greater than max",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Replicas: &five,
 					},
-					Autoscaler: &AutoscalerSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
 					},
 				},
@@ -845,9 +910,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid min replicas, greater than max",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
 						MinReplicas: &five,
 					},
@@ -857,9 +922,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid min replicas, lesser than 1",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
 						MinReplicas: &zero,
 					},
@@ -868,54 +933,98 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 			expectedErr: "minReplicas should be one or more",
 		},
 		{
-			name: "invalid autoscaler scale down",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			name: "invalid autoscaler scale down stablization window - <0",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
 						Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
 							ScaleDown: &autoscalingv2.HPAScalingRules{
-								StabilizationWindowSeconds: &zero,
+								StabilizationWindowSeconds: &minusOne,
 							},
 						},
 					},
 				},
 			},
-			expectedErr: "scaleDown should be one or more",
+			expectedErr: "scaleDown.stabilizationWindowSeconds should be >=0 and <=3600",
 		},
 		{
-			name: "invalid autoscaler scale up",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			name: "invalid autoscaler scale down stablization window - >3600",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
+						MaxReplicas: &three,
+						Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+							ScaleDown: &autoscalingv2.HPAScalingRules{
+								StabilizationWindowSeconds: &maxInt,
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "scaleDown.stabilizationWindowSeconds should be >=0 and <=3600",
+		},
+		{
+			name: "invalid autoscaler scale up stablization window - <0",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
 						Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
 							ScaleUp: &autoscalingv2.HPAScalingRules{
-								StabilizationWindowSeconds: &zero,
+								StabilizationWindowSeconds: &minusOne,
 							},
 						},
 					},
 				},
 			},
-			expectedErr: "scaleUp should be one or more",
+			expectedErr: "scaleUp.stabilizationWindowSeconds should be >=0 and <=3600",
+		},
+		{
+			name: "invalid autoscaler scale up stablization window - >3600",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
+						MaxReplicas: &three,
+						Behavior: &autoscalingv2.HorizontalPodAutoscalerBehavior{
+							ScaleUp: &autoscalingv2.HPAScalingRules{
+								StabilizationWindowSeconds: &maxInt,
+							},
+						},
+					},
+				},
+			},
+			expectedErr: "scaleUp.stabilizationWindowSeconds should be >=0 and <=3600",
 		},
 		{
 			name: "invalid autoscaler target cpu utilization",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas:          &three,
 						TargetCPUUtilization: &zero,
 					},
 				},
 			},
-			expectedErr: "targetCPUUtilization should be greater than 0 and less than 100",
+			expectedErr: "targetCPUUtilization should be greater than 0",
+		},
+		{
+			name: "invalid autoscaler target memory utilization",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
+						MaxReplicas:             &three,
+						TargetMemoryUtilization: &zero,
+					},
+				},
+			},
+			expectedErr: "targetMemoryUtilization should be greater than 0",
 		},
 		{
 			name: "autoscaler minReplicas is less than maxReplicas",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &one,
 						MinReplicas: &five,
 					},
@@ -925,11 +1034,11 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid autoscaler metric type",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
-						Metrics: []MetricSpec{
+						Metrics: []v1beta1.MetricSpec{
 							{
 								Type: autoscalingv2.ResourceMetricSourceType,
 							},
@@ -941,11 +1050,11 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid pod metric average value",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
-						Metrics: []MetricSpec{
+						Metrics: []v1beta1.MetricSpec{
 							{
 								Type: autoscalingv2.PodsMetricSourceType,
 								Pods: &autoscalingv2.PodsMetricSource{
@@ -966,11 +1075,11 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "utilization target is not valid with pod metrics",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Autoscaler: &AutoscalerSpec{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Autoscaler: &v1beta1.AutoscalerSpec{
 						MaxReplicas: &three,
-						Metrics: []MetricSpec{
+						Metrics: []v1beta1.MetricSpec{
 							{
 								Type: autoscalingv2.PodsMetricSourceType,
 								Pods: &autoscalingv2.PodsMetricSource{
@@ -990,25 +1099,23 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 			expectedErr: "the OpenTelemetry Spec autoscale configuration is incorrect, invalid pods target type",
 		},
 		{
-			name: "invalid deployment mode incompabible with ingress settings",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeSidecar,
-					Ingress: Ingress{
-						Type: IngressTypeIngress,
+			name: "invalid deployment mode incompatible with ingress settings",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeSidecar,
+					Ingress: v1beta1.Ingress{
+						Type: v1beta1.IngressTypeIngress,
 					},
 				},
 			},
-			expectedErr: fmt.Sprintf("Ingress can only be used in combination with the modes: %s, %s, %s",
-				ModeDeployment, ModeDaemonSet, ModeStatefulSet,
-			),
+			expectedErr: fmt.Sprintf("Ingress can only be used in combination with the modes: %s, %s, %s", v1beta1.ModeDeployment, v1beta1.ModeDaemonSet, v1beta1.ModeStatefulSet),
 		},
 		{
 			name: "invalid mode with priorityClassName",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeSidecar,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeSidecar,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						PriorityClassName: "test-class",
 					},
 				},
@@ -1017,10 +1124,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid mode with affinity",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeSidecar,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeSidecar,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						Affinity: &v1.Affinity{
 							NodeAffinity: &v1.NodeAffinity{
 								RequiredDuringSchedulingIgnoredDuringExecution: &v1.NodeSelector{
@@ -1045,9 +1152,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid InitialDelaySeconds",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					LivenessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					LivenessProbe: &v1beta1.Probe{
 						InitialDelaySeconds: &minusOne,
 					},
 				},
@@ -1056,9 +1163,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid InitialDelaySeconds readiness",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					ReadinessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					ReadinessProbe: &v1beta1.Probe{
 						InitialDelaySeconds: &minusOne,
 					},
 				},
@@ -1067,9 +1174,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid PeriodSeconds",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					LivenessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					LivenessProbe: &v1beta1.Probe{
 						PeriodSeconds: &zero,
 					},
 				},
@@ -1078,9 +1185,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid PeriodSeconds readiness",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					ReadinessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					ReadinessProbe: &v1beta1.Probe{
 						PeriodSeconds: &zero,
 					},
 				},
@@ -1089,9 +1196,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid TimeoutSeconds",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					LivenessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					LivenessProbe: &v1beta1.Probe{
 						TimeoutSeconds: &zero,
 					},
 				},
@@ -1100,9 +1207,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid TimeoutSeconds readiness",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					ReadinessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					ReadinessProbe: &v1beta1.Probe{
 						TimeoutSeconds: &zero,
 					},
 				},
@@ -1111,9 +1218,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid SuccessThreshold",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					LivenessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					LivenessProbe: &v1beta1.Probe{
 						SuccessThreshold: &zero,
 					},
 				},
@@ -1122,9 +1229,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid SuccessThreshold readiness",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					ReadinessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					ReadinessProbe: &v1beta1.Probe{
 						SuccessThreshold: &zero,
 					},
 				},
@@ -1133,9 +1240,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid FailureThreshold",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					LivenessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					LivenessProbe: &v1beta1.Probe{
 						FailureThreshold: &zero,
 					},
 				},
@@ -1144,9 +1251,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid FailureThreshold readiness",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					ReadinessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					ReadinessProbe: &v1beta1.Probe{
 						FailureThreshold: &zero,
 					},
 				},
@@ -1155,9 +1262,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid TerminationGracePeriodSeconds",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					LivenessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					LivenessProbe: &v1beta1.Probe{
 						TerminationGracePeriodSeconds: &zero64,
 					},
 				},
@@ -1166,9 +1273,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid TerminationGracePeriodSeconds readiness",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					ReadinessProbe: &Probe{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					ReadinessProbe: &v1beta1.Probe{
 						TerminationGracePeriodSeconds: &zero64,
 					},
 				},
@@ -1177,10 +1284,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid AdditionalContainers",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeSidecar,
-					OpenTelemetryCommonFields: OpenTelemetryCommonFields{
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeSidecar,
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
 						AdditionalContainers: []v1.Container{
 							{
 								Name: "test",
@@ -1193,10 +1300,10 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "missing ingress hostname for subdomain ruleType",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Ingress: Ingress{
-						RuleType: IngressRuleTypeSubdomain,
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Ingress: v1beta1.Ingress{
+						RuleType: v1beta1.IngressRuleTypeSubdomain,
 					},
 				},
 			},
@@ -1204,9 +1311,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid updateStrategy for Deployment mode",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeDeployment,
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeDeployment,
 					DaemonSetUpdateStrategy: appsv1.DaemonSetUpdateStrategy{
 						Type: "RollingUpdate",
 						RollingUpdate: &appsv1.RollingUpdateDaemonSet{
@@ -1220,9 +1327,9 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 		{
 			name: "invalid updateStrategy for Statefulset mode",
-			otelcol: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{
-					Mode: ModeStatefulSet,
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					Mode: v1beta1.ModeStatefulSet,
 					DeploymentUpdateStrategy: appsv1.DeploymentStrategy{
 						Type: "RollingUpdate",
 						RollingUpdate: &appsv1.RollingUpdateDeployment{
@@ -1234,20 +1341,60 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 			},
 			expectedErr: "the OpenTelemetry Collector mode is set to statefulset, which does not support the attribute 'deploymentUpdateStrategy'",
 		},
+		{
+			name: "missing port for ingress type",
+			otelcol: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{
+					OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
+						Ports: []v1beta1.PortsSpec{
+							{
+								ServicePort: v1.ServicePort{},
+							},
+						},
+					},
+					Ingress: v1beta1.Ingress{
+						Type: v1beta1.IngressTypeIngress,
+					},
+				},
+			},
+			expectedErr: "the OpenTelemetry Spec Ports configuration is incorrect",
+		},
+	}
+
+	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+		var warnings admission.Warnings
+		cfg := config.New(
+			config.WithCollectorImage("default-collector"),
+			config.WithTargetAllocatorImage("default-ta-allocator"),
+		)
+		params := manifests.Params{
+			Log:     logr.Discard(),
+			Config:  cfg,
+			OtelCol: collector,
+		}
+		_, err := collectorManifests.Build(params)
+		if err != nil {
+			warnings = append(warnings, err.Error())
+			return warnings
+		}
+		return nil
 	}
 
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			cvw := &CollectorWebhook{
-				logger: logr.Discard(),
-				scheme: testScheme,
-				cfg: config.New(
+			cvw := v1beta1.NewCollectorWebhook(
+				logr.Discard(),
+				testScheme,
+				config.New(
 					config.WithCollectorImage("collector:v0.0.0"),
 					config.WithTargetAllocatorImage("ta:v0.0.0"),
 				),
-				reviewer: getReviewer(test.shouldFailSar),
-			}
+				getReviewer(test.shouldFailSar),
+				nil,
+				bv,
+				nil,
+			)
 			ctx := context.Background()
 			warnings, err := cvw.ValidateCreate(ctx, &test.otelcol)
 			if test.expectedErr == "" {
@@ -1264,35 +1411,58 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 func TestOTELColValidateUpdateWebhook(t *testing.T) {
 	tests := []struct { //nolint:govet
 		name             string
-		otelcolOld       OpenTelemetryCollector
-		otelcolNew       OpenTelemetryCollector
+		otelcolOld       v1beta1.OpenTelemetryCollector
+		otelcolNew       v1beta1.OpenTelemetryCollector
 		expectedErr      string
 		expectedWarnings []string
 		shouldFailSar    bool
 	}{
 		{
 			name: "mode should not be changed",
-			otelcolOld: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{Mode: ModeStatefulSet},
+			otelcolOld: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{Mode: v1beta1.ModeStatefulSet},
 			},
-			otelcolNew: OpenTelemetryCollector{
-				Spec: OpenTelemetryCollectorSpec{Mode: ModeDeployment},
+			otelcolNew: v1beta1.OpenTelemetryCollector{
+				Spec: v1beta1.OpenTelemetryCollectorSpec{Mode: v1beta1.ModeDeployment},
 			},
 			expectedErr: "which does not support modification",
 		},
 	}
+
+	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+		var warnings admission.Warnings
+		cfg := config.New(
+			config.WithCollectorImage("default-collector"),
+			config.WithTargetAllocatorImage("default-ta-allocator"),
+		)
+		params := manifests.Params{
+			Log:     logr.Discard(),
+			Config:  cfg,
+			OtelCol: collector,
+		}
+		_, err := collectorManifests.Build(params)
+		if err != nil {
+			warnings = append(warnings, err.Error())
+			return warnings
+		}
+		return nil
+	}
+
 	for _, test := range tests {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
-			cvw := &CollectorWebhook{
-				logger: logr.Discard(),
-				scheme: testScheme,
-				cfg: config.New(
+			cvw := v1beta1.NewCollectorWebhook(
+				logr.Discard(),
+				testScheme,
+				config.New(
 					config.WithCollectorImage("collector:v0.0.0"),
 					config.WithTargetAllocatorImage("ta:v0.0.0"),
 				),
-				reviewer: getReviewer(test.shouldFailSar),
-			}
+				getReviewer(test.shouldFailSar),
+				nil,
+				bv,
+				nil,
+			)
 			ctx := context.Background()
 			warnings, err := cvw.ValidateUpdate(ctx, &test.otelcolOld, &test.otelcolNew)
 			if test.expectedErr == "" {

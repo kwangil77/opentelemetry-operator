@@ -15,12 +15,16 @@
 package constants
 
 const (
-	EnvOTELServiceName          = "OTEL_SERVICE_NAME"
-	EnvOTELExporterOTLPEndpoint = "OTEL_EXPORTER_OTLP_ENDPOINT"
-	EnvOTELResourceAttrs        = "OTEL_RESOURCE_ATTRIBUTES"
-	EnvOTELPropagators          = "OTEL_PROPAGATORS"
-	EnvOTELTracesSampler        = "OTEL_TRACES_SAMPLER"
-	EnvOTELTracesSamplerArg     = "OTEL_TRACES_SAMPLER_ARG"
+	EnvOTELServiceName      = "OTEL_SERVICE_NAME"
+	EnvOTELResourceAttrs    = "OTEL_RESOURCE_ATTRIBUTES"
+	EnvOTELPropagators      = "OTEL_PROPAGATORS"
+	EnvOTELTracesSampler    = "OTEL_TRACES_SAMPLER"
+	EnvOTELTracesSamplerArg = "OTEL_TRACES_SAMPLER_ARG"
+
+	EnvOTELExporterOTLPEndpoint      = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	EnvOTELExporterCertificate       = "OTEL_EXPORTER_OTLP_CERTIFICATE"
+	EnvOTELExporterClientCertificate = "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE"
+	EnvOTELExporterClientKey         = "OTEL_EXPORTER_OTLP_CLIENT_KEY"
 
 	InstrumentationPrefix                           = "instrumentation.opentelemetry.io/"
 	AnnotationDefaultAutoInstrumentationJava        = InstrumentationPrefix + "default-auto-instrumentation-java-image"
@@ -30,6 +34,13 @@ const (
 	AnnotationDefaultAutoInstrumentationGo          = InstrumentationPrefix + "default-auto-instrumentation-go-image"
 	AnnotationDefaultAutoInstrumentationApacheHttpd = InstrumentationPrefix + "default-auto-instrumentation-apache-httpd-image"
 	AnnotationDefaultAutoInstrumentationNginx       = InstrumentationPrefix + "default-auto-instrumentation-nginx-image"
+
+	LabelAppName     = "app.kubernetes.io/name"
+	LabelAppInstance = "app.kubernetes.io/instance"
+	LabelAppVersion  = "app.kubernetes.io/version"
+	LabelAppPartOf   = "app.kubernetes.io/part-of"
+
+	ResourceAttributeAnnotationPrefix = "resource.opentelemetry.io/"
 
 	EnvPodName  = "OTEL_RESOURCE_ATTRIBUTES_POD_NAME"
 	EnvPodUID   = "OTEL_RESOURCE_ATTRIBUTES_POD_UID"
@@ -45,4 +56,9 @@ const (
 	FlagNginx       = "enable-nginx-instrumentation"
 	FlagNodeJS      = "enable-nodejs-instrumentation"
 	FlagJava        = "enable-java-instrumentation"
+
+	TACollectorTLSDirPath      = "/tls"
+	TACollectorCAFileName      = "ca.crt"
+	TACollectorTLSKeyFileName  = "tls.key"
+	TACollectorTLSCertFileName = "tls.crt"
 )

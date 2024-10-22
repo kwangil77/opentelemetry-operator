@@ -22,6 +22,7 @@ import (
 
 	"github.com/open-telemetry/opentelemetry-operator/apis/v1alpha1"
 	"github.com/open-telemetry/opentelemetry-operator/apis/v1beta1"
+	"github.com/open-telemetry/opentelemetry-operator/internal/autodetect/certmanager"
 	"github.com/open-telemetry/opentelemetry-operator/internal/config"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests"
 	"github.com/open-telemetry/opentelemetry-operator/pkg/featuregate"
@@ -46,6 +47,16 @@ func Build(params Params) ([]client.Object, error) {
 		resourceFactories = append(resourceFactories, manifests.FactoryWithoutError(ServiceMonitor))
 	}
 
+	if params.Config.CertManagerAvailability() == certmanager.Available && featuregate.EnableTargetAllocatorMTLS.IsEnabled() {
+		resourceFactories = append(resourceFactories,
+			manifests.FactoryWithoutError(SelfSignedIssuer),
+			manifests.FactoryWithoutError(CACertificate),
+			manifests.FactoryWithoutError(CAIssuer),
+			manifests.FactoryWithoutError(ServingCertificate),
+			manifests.FactoryWithoutError(ClientCertificate),
+		)
+	}
+
 	for _, factory := range resourceFactories {
 		res, err := factory(params)
 		if err != nil {
@@ -62,7 +73,7 @@ type Params struct {
 	Recorder        record.EventRecorder
 	Scheme          *runtime.Scheme
 	Log             logr.Logger
-	Collector       v1beta1.OpenTelemetryCollector
+	Collector       *v1beta1.OpenTelemetryCollector
 	TargetAllocator v1alpha1.TargetAllocator
 	Config          config.Config
 }
