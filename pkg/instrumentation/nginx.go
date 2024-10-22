@@ -62,7 +62,7 @@ const (
 	6) Inject mounting of volumes / files into appropriate directories in the application container
 */
 
-func injectNginxSDK(_ logr.Logger, nginxSpec v1alpha1.Nginx, pod corev1.Pod, index int, otlpEndpoint string, resourceMap map[string]string) corev1.Pod {
+func injectNginxSDK(_ logr.Logger, nginxSpec v1alpha1.Nginx, pod corev1.Pod, useLabelsForResourceAttributes bool, index int, otlpEndpoint string, resourceMap map[string]string) corev1.Pod {
 
 	// caller checks if there is at least one container
 	container := &pod.Spec.Containers[index]
@@ -186,7 +186,7 @@ NGINX_SID_VALUE=$5 \n
 echo "Input Parameters: $@" \n
 set -x \n
 \n
-cp -ar /opt/opentelemetry/* ${NGINX_AGENT_DIR_FULL} \n
+cp -r /opt/opentelemetry/* ${NGINX_AGENT_DIR_FULL} \n
 \n
 NGINX_VERSION=$(cat ${NGINX_AGENT_CONF_DIR_FULL}/version.txt) \n
 NGINX_AGENT_LOG_DIR=$(echo "${NGINX_AGENT_DIR_FULL}/logs" | sed 's,/,\\/,g') \n
@@ -217,7 +217,7 @@ mv ${NGINX_AGENT_CONF_DIR_FULL}/opentelemetry_agent.conf  ${NGINX_AGENT_CONF_DIR
 			Env: []corev1.EnvVar{
 				{
 					Name:  nginxAttributesEnvVar,
-					Value: getNginxOtelConfig(pod, nginxSpec, index, otlpEndpoint, resourceMap),
+					Value: getNginxOtelConfig(pod, useLabelsForResourceAttributes, nginxSpec, index, otlpEndpoint, resourceMap),
 				},
 				{
 					Name:  "OTEL_NGINX_I13N_SCRIPT",
@@ -277,12 +277,12 @@ func isNginxInitContainerMissing(pod corev1.Pod, containerName string) bool {
 
 // Calculate Nginx agent configuration file based on attributes provided by the injection rules
 // and by the pod values.
-func getNginxOtelConfig(pod corev1.Pod, nginxSpec v1alpha1.Nginx, index int, otelEndpoint string, resourceMap map[string]string) string {
+func getNginxOtelConfig(pod corev1.Pod, useLabelsForResourceAttributes bool, nginxSpec v1alpha1.Nginx, index int, otelEndpoint string, resourceMap map[string]string) string {
 
 	if otelEndpoint == "" {
 		otelEndpoint = "http://localhost:4317/"
 	}
-	serviceName := chooseServiceName(pod, resourceMap, index)
+	serviceName := chooseServiceName(pod, useLabelsForResourceAttributes, resourceMap, index)
 	serviceNamespace := pod.GetNamespace()
 	if len(serviceNamespace) == 0 {
 		serviceNamespace = resourceMap[string(semconv.K8SNamespaceNameKey)]

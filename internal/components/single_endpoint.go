@@ -16,6 +16,7 @@ package components
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/go-logr/logr"
 	"github.com/mitchellh/mapstructure"
@@ -25,14 +26,14 @@ import (
 )
 
 var (
-	_ ComponentPortParser = &SingleEndpointParser{}
+	_ Parser = &GenericParser[*SingleEndpointConfig]{}
 )
 
 // SingleEndpointConfig represents the minimal struct for a given YAML configuration input containing either
 // endpoint or listen_address.
 type SingleEndpointConfig struct {
-	Endpoint      string `mapstructure:"endpoint,omitempty"`
-	ListenAddress string `mapstructure:"listen_address,omitempty"`
+	Endpoint      string `mapstructure:"endpoint,omitempty" yaml:"endpoint,omitempty"`
+	ListenAddress string `mapstructure:"listen_address,omitempty" yaml:"listen_address,omitempty"`
 }
 
 func (g *SingleEndpointConfig) GetPortNumOrDefault(logger logr.Logger, p int32) int32 {
@@ -55,62 +56,56 @@ func (g *SingleEndpointConfig) GetPortNum() (int32, error) {
 	return UnsetPort, PortNotFoundErr
 }
 
-// SingleEndpointParser is a special parser for a generic receiver that has an endpoint or listen_address in its
-// configuration. It doesn't self-register and should be created/used directly.
-type SingleEndpointParser struct {
-	name string
-
-	svcPort *corev1.ServicePort
-
-	// failSilently allows the parser to prevent the propagation of failure if the parser fails to set a port.
-	failSilently bool
+func ParseSingleEndpointSilent(logger logr.Logger, name string, defaultPort *corev1.ServicePort, singleEndpointConfig *SingleEndpointConfig) ([]corev1.ServicePort, error) {
+	return internalParseSingleEndpoint(logger, name, true, defaultPort, singleEndpointConfig)
 }
 
-func (s *SingleEndpointParser) Ports(logger logr.Logger, name string, config interface{}) ([]corev1.ServicePort, error) {
-	singleEndpointConfig := &SingleEndpointConfig{}
-	if err := mapstructure.Decode(config, singleEndpointConfig); err != nil {
-		return nil, err
+func ParseSingleEndpoint(logger logr.Logger, name string, defaultPort *corev1.ServicePort, singleEndpointConfig *SingleEndpointConfig) ([]corev1.ServicePort, error) {
+	return internalParseSingleEndpoint(logger, name, false, defaultPort, singleEndpointConfig)
+}
+
+func internalParseSingleEndpoint(logger logr.Logger, name string, failSilently bool, defaultPort *corev1.ServicePort, singleEndpointConfig *SingleEndpointConfig) ([]corev1.ServicePort, error) {
+	if singleEndpointConfig == nil {
+		return nil, nil
 	}
-	if _, err := singleEndpointConfig.GetPortNum(); err != nil && s.svcPort.Port == UnsetPort {
-		logger.WithValues("receiver", s.name).Error(err, "couldn't parse the endpoint's port and no default port set")
-		if s.failSilently {
+	if _, err := singleEndpointConfig.GetPortNum(); err != nil && defaultPort.Port == UnsetPort {
+		if failSilently {
+			logger.WithValues("receiver", defaultPort.Name).V(4).Info("couldn't parse the endpoint's port and no default port set", "error", err)
 			err = nil
+		} else {
+			logger.WithValues("receiver", defaultPort.Name).Error(err, "couldn't parse the endpoint's port and no default port set")
 		}
 		return []corev1.ServicePort{}, err
 	}
-
-	port := singleEndpointConfig.GetPortNumOrDefault(logger, s.svcPort.Port)
-	s.svcPort.Name = naming.PortName(name, port)
-	return []corev1.ServicePort{ConstructServicePort(s.svcPort, port)}, nil
+	port := singleEndpointConfig.GetPortNumOrDefault(logger, defaultPort.Port)
+	svcPort := defaultPort
+	svcPort.Name = naming.PortName(name, port)
+	return []corev1.ServicePort{ConstructServicePort(svcPort, port)}, nil
 }
 
-func (s *SingleEndpointParser) ParserType() string {
-	return ComponentType(s.name)
+func NewSinglePortParserBuilder(name string, port int32) Builder[*SingleEndpointConfig] {
+	return NewBuilder[*SingleEndpointConfig]().WithPort(port).WithName(name).WithPortParser(ParseSingleEndpoint).WithDefaultsApplier(AddressDefaulter).WithDefaultRecAddress("0.0.0.0")
 }
 
-func (s *SingleEndpointParser) ParserName() string {
-	return fmt.Sprintf("__%s", s.name)
+func NewSilentSinglePortParserBuilder(name string, port int32) Builder[*SingleEndpointConfig] {
+	return NewBuilder[*SingleEndpointConfig]().WithPort(port).WithName(name).WithPortParser(ParseSingleEndpointSilent).WithDefaultsApplier(AddressDefaulter).WithDefaultRecAddress("0.0.0.0")
 }
 
-func NewSinglePortParser(name string, port int32, opts ...PortBuilderOption) *SingleEndpointParser {
-	servicePort := &corev1.ServicePort{
-		Name: naming.PortName(name, port),
-		Port: port,
+func AddressDefaulter(logger logr.Logger, defaultRecAddr string, port int32, config *SingleEndpointConfig) (map[string]interface{}, error) {
+	if config == nil {
+		config = &SingleEndpointConfig{}
 	}
-	for _, opt := range opts {
-		opt(servicePort)
-	}
-	return &SingleEndpointParser{name: name, svcPort: servicePort}
-}
 
-// NewSilentSinglePortParser returns a SingleEndpointParser that errors silently on failure to find a port.
-func NewSilentSinglePortParser(name string, port int32, opts ...PortBuilderOption) *SingleEndpointParser {
-	servicePort := &corev1.ServicePort{
-		Name: naming.PortName(name, port),
-		Port: port,
+	if config.Endpoint == "" {
+		config.Endpoint = fmt.Sprintf("%s:%d", defaultRecAddr, port)
+	} else {
+		v := strings.Split(config.Endpoint, ":")
+		if len(v) < 2 || v[0] == "" {
+			config.Endpoint = fmt.Sprintf("%s:%s", defaultRecAddr, v[len(v)-1])
+		}
 	}
-	for _, opt := range opts {
-		opt(servicePort)
-	}
-	return &SingleEndpointParser{name: name, svcPort: servicePort, failSilently: true}
+
+	res := make(map[string]interface{})
+	err := mapstructure.Decode(config, &res)
+	return res, err
 }

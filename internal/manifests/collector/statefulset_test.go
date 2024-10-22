@@ -60,9 +60,6 @@ func TestStatefulSetNewDefault(t *testing.T) {
 	// verify
 	assert.Equal(t, "my-instance-collector", ss.Name)
 	assert.Equal(t, "my-instance-collector", ss.Labels["app.kubernetes.io/name"])
-	assert.Equal(t, "true", ss.Annotations["prometheus.io/scrape"])
-	assert.Equal(t, "8888", ss.Annotations["prometheus.io/port"])
-	assert.Equal(t, "/metrics", ss.Annotations["prometheus.io/path"])
 	assert.Equal(t, testTolerationValues, ss.Spec.Template.Spec.Tolerations)
 
 	assert.Len(t, ss.Spec.Template.Spec.Containers, 1)
@@ -179,6 +176,45 @@ func TestStatefulSetVolumeClaimTemplates(t *testing.T) {
 
 	// assert correct pvc storage
 	assert.Equal(t, resource.MustParse("1Gi"), ss.Spec.VolumeClaimTemplates[0].Spec.Resources.Requests["storage"])
+}
+
+func TestStatefulSetPeristentVolumeRetentionPolicy(t *testing.T) {
+	// prepare
+	otelcol := v1beta1.OpenTelemetryCollector{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "my-instance",
+		},
+		Spec: v1beta1.OpenTelemetryCollectorSpec{
+			Mode: "statefulset",
+			StatefulSetCommonFields: v1beta1.StatefulSetCommonFields{
+				PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+					WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+					WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+				},
+			},
+		},
+	}
+	cfg := config.New()
+
+	params := manifests.Params{
+		OtelCol: otelcol,
+		Config:  cfg,
+		Log:     logger,
+	}
+
+	// test
+	ss, err := StatefulSet(params)
+	require.NoError(t, err)
+
+	// assert PersistentVolumeClaimRetentionPolicy added
+	assert.NotNil(t, ss.Spec.PersistentVolumeClaimRetentionPolicy)
+
+	// assert correct WhenDeleted value
+	assert.Equal(t, ss.Spec.PersistentVolumeClaimRetentionPolicy.WhenDeleted, appsv1.RetainPersistentVolumeClaimRetentionPolicyType)
+
+	// assert correct WhenScaled value
+	assert.Equal(t, ss.Spec.PersistentVolumeClaimRetentionPolicy.WhenScaled, appsv1.DeletePersistentVolumeClaimRetentionPolicyType)
+
 }
 
 func TestStatefulSetPodAnnotations(t *testing.T) {
@@ -361,7 +397,7 @@ func TestStatefulSetFilterAnnotations(t *testing.T) {
 	d, err := StatefulSet(params)
 	require.NoError(t, err)
 
-	assert.Len(t, d.ObjectMeta.Annotations, 4)
+	assert.Len(t, d.ObjectMeta.Annotations, 0)
 	for k := range excludedAnnotations {
 		assert.NotContains(t, d.ObjectMeta.Annotations, k)
 	}
@@ -535,9 +571,9 @@ func TestStatefulSetInitContainer(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my-instance-collector", s.Name)
 	assert.Equal(t, "my-instance-collector", s.Labels["app.kubernetes.io/name"])
-	assert.Equal(t, "true", s.Annotations["prometheus.io/scrape"])
-	assert.Equal(t, "8888", s.Annotations["prometheus.io/port"])
-	assert.Equal(t, "/metrics", s.Annotations["prometheus.io/path"])
+	assert.Equal(t, "true", s.Spec.Template.Annotations["prometheus.io/scrape"])
+	assert.Equal(t, "8888", s.Spec.Template.Annotations["prometheus.io/port"])
+	assert.Equal(t, "/metrics", s.Spec.Template.Annotations["prometheus.io/path"])
 	assert.Len(t, s.Spec.Template.Spec.InitContainers, 1)
 }
 
@@ -619,9 +655,9 @@ func TestStatefulSetAdditionalContainers(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "my-instance-collector", s.Name)
 	assert.Equal(t, "my-instance-collector", s.Labels["app.kubernetes.io/name"])
-	assert.Equal(t, "true", s.Annotations["prometheus.io/scrape"])
-	assert.Equal(t, "8888", s.Annotations["prometheus.io/port"])
-	assert.Equal(t, "/metrics", s.Annotations["prometheus.io/path"])
+	assert.Equal(t, "true", s.Spec.Template.Annotations["prometheus.io/scrape"])
+	assert.Equal(t, "8888", s.Spec.Template.Annotations["prometheus.io/port"])
+	assert.Equal(t, "/metrics", s.Spec.Template.Annotations["prometheus.io/path"])
 	assert.Len(t, s.Spec.Template.Spec.Containers, 2)
 	assert.Equal(t, v1.Container{Name: "test"}, s.Spec.Template.Spec.Containers[0])
 }
