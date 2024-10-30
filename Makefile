@@ -204,9 +204,12 @@ add-image-opampbridge:
 add-rbac-permissions-to-operator: manifests kustomize
 	# Kustomize only allows patches in the folder where the kustomization is located
 	# This folder is ignored by .gitignore
-	cp -r tests/e2e-automatic-rbac/extra-permissions-operator/ config/rbac/extra-permissions-operator
+	mkdir -p config/rbac/extra-permissions-operator
+	cp -r tests/e2e-automatic-rbac/extra-permissions-operator/* config/rbac/extra-permissions-operator
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/namespaces.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/nodes.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/nodes-stats.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/nodes-proxy.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/rbac.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/replicaset.yaml
 
@@ -493,12 +496,12 @@ kind: ## Download kind locally if necessary.
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
 $(CONTROLLER_GEN): $(LOCALBIN)
-	@test -s $(LOCALBIN)/controller-gen && $(LOCALBIN)/controller-gen --version | grep -q $(CONTROLLER_TOOLS_VERSION) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+	$(call go-get-tool,$(CONTROLLER_GEN), sigs.k8s.io/controller-tools/cmd/controller-gen,$(CONTROLLER_TOOLS_VERSION))
 
 .PHONY: envtest
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
 $(ENVTEST): $(LOCALBIN)
-	@test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+	$(call go-get-tool,$(ENVTEST), sigs.k8s.io/controller-runtime/tools/setup-envtest,latest)
 
 CRDOC = $(shell pwd)/bin/crdoc
 .PHONY: crdoc
