@@ -11,6 +11,7 @@ The operator manages:
 
 ## Documentation
 
+- [Compatibility & Support docs](./docs/compatibility.md)
 - [API docs](./docs/api.md)
 - [Offical Telemetry Operator page](https://opentelemetry.io/docs/kubernetes/operator/)
 
@@ -291,9 +292,12 @@ instrumentation.opentelemetry.io/inject-nodejs: "true"
 ```
 
 Python:
+Python auto-instrumentation also honors an annotation that will permit it to run it on images with a different C library than glibc.
 
 ```bash
 instrumentation.opentelemetry.io/inject-python: "true"
+instrumentation.opentelemetry.io/otel-python-platform: "glibc" # for Linux glibc based images, this is the default value and can be omitted
+instrumentation.opentelemetry.io/otel-python-platform: "musl" # for Linux musl based images
 ```
 
 .NET:
@@ -789,10 +793,6 @@ The priority for setting resource attributes is as follows (first found wins):
 
 This priority is applied for each resource attribute separately, so it is possible to set some attributes via
 annotations and others via labels.
-
-## Compatibility 
-
-See [here](docs/compatibility.md).
 
 ## Contributing and Developing
 
