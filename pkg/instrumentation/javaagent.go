@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package instrumentation
 
@@ -24,24 +13,25 @@ import (
 
 const (
 	envJavaToolsOptions   = "JAVA_TOOL_OPTIONS"
-	javaAgent             = "-javaagent:/otel-auto-instrumentation-java/javaagent.jar"
+	javaAgent             = " -javaagent:/otel-auto-instrumentation-java/javaagent.jar"
 	javaInitContainerName = initContainerName + "-java"
 	javaVolumeName        = volumeName + "-java"
 	javaInstrMountPath    = "/otel-auto-instrumentation-java"
 )
 
-func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, index int) corev1.Pod {
+func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, index int) (corev1.Pod, error) {
 	volume := instrVolume(javaSpec.VolumeClaimTemplate, javaVolumeName, javaSpec.VolumeSizeLimit)
+
 	// caller checks if there is at least one container.
 	container := &pod.Spec.Containers[index]
 
-	// inject Java instrumentation spec env vars.
-	for _, env := range javaSpec.Env {
-		idx := getIndexOfEnv(container.Env, env.Name)
-		if idx == -1 {
-			container.Env = append(container.Env, env)
-		}
+	err := validateContainerEnv(container.Env, envJavaToolsOptions)
+	if err != nil {
+		return pod, err
 	}
+
+	// inject Java instrumentation spec env vars.
+	container.Env = appendIfNotSet(container.Env, javaSpec.Env...)
 
 	javaJVMArgument := javaAgent
 	if len(javaSpec.Extensions) > 0 {
@@ -49,14 +39,14 @@ func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, index int) corev1.P
 	}
 
 	idx := getIndexOfEnv(container.Env, envJavaToolsOptions)
-	if idx != -1 {
-		// https://kubernetes.io/docs/tasks/inject-data-application/define-interdependent-environment-variables/
-		javaJVMArgument = fmt.Sprintf("$(%s) %s", envJavaToolsOptions, javaJVMArgument)
+	if idx == -1 {
+		container.Env = append(container.Env, corev1.EnvVar{
+			Name:  envJavaToolsOptions,
+			Value: javaJVMArgument,
+		})
+	} else {
+		container.Env[idx].Value = container.Env[idx].Value + javaJVMArgument
 	}
-	container.Env = append(container.Env, corev1.EnvVar{
-		Name:  envJavaToolsOptions,
-		Value: javaJVMArgument,
-	})
 
 	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 		Name:      volume.Name,
@@ -91,5 +81,5 @@ func injectJavaagent(javaSpec v1alpha1.Java, pod corev1.Pod, index int) corev1.P
 		}
 
 	}
-	return pod
+	return pod, err
 }

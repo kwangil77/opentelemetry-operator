@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package targetallocator
 
@@ -171,6 +160,14 @@ prometheus_cr:
     matchlabels:
       release: my-instance
     matchexpressions: []
+  probe_selector:
+    matchlabels:
+      release: my-instance
+    matchexpressions: []
+  scrape_config_selector:
+    matchlabels:
+      release: my-instance
+    matchexpressions: []
   service_monitor_selector:
     matchlabels:
       release: my-instance
@@ -185,6 +182,14 @@ prometheus_cr:
 			},
 		}
 		targetAllocator.Spec.PrometheusCR.ServiceMonitorSelector = &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				"release": "my-instance",
+			}}
+		targetAllocator.Spec.PrometheusCR.ScrapeConfigSelector = &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				"release": "my-instance",
+			}}
+		targetAllocator.Spec.PrometheusCR.ProbeSelector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{
 				"release": "my-instance",
 			}}
@@ -224,6 +229,8 @@ filter_strategy: relabel-config
 prometheus_cr:
   enabled: true
   pod_monitor_selector: null
+  probe_selector: null
+  scrape_config_selector: null
   scrape_interval: 30s
   service_monitor_selector: null
 `,
@@ -285,6 +292,8 @@ https:
 prometheus_cr:
   enabled: true
   pod_monitor_selector: null
+  probe_selector: null
+  scrape_config_selector: null
   scrape_interval: 30s
   service_monitor_selector: null
 `,
@@ -342,6 +351,8 @@ https:
 prometheus_cr:
   enabled: true
   pod_monitor_selector: null
+  probe_selector: null
+  scrape_config_selector: null
   scrape_interval: 30s
   service_monitor_selector: null
 `,

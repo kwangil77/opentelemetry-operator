@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package collector
 
@@ -42,10 +31,11 @@ const (
 	BaseServiceType ServiceType = iota
 	HeadlessServiceType
 	MonitoringServiceType
+	ExtensionServiceType
 )
 
 func (s ServiceType) String() string {
-	return [...]string{"base", "headless", "monitoring"}[s]
+	return [...]string{"base", "headless", "monitoring", "extension"}[s]
 }
 
 func HeadlessService(params manifests.Params) (*corev1.Service, error) {
@@ -72,7 +62,6 @@ func HeadlessService(params manifests.Params) (*corev1.Service, error) {
 }
 
 func MonitoringService(params manifests.Params) (*corev1.Service, error) {
-
 	name := naming.MonitoringService(params.OtelCol.Name)
 	labels := manifestutils.Labels(params.OtelCol.ObjectMeta, name, params.OtelCol.Spec.Image, ComponentOpenTelemetryCollector, []string{})
 	labels[monitoringLabel] = valueExists
@@ -83,7 +72,7 @@ func MonitoringService(params manifests.Params) (*corev1.Service, error) {
 		return nil, err
 	}
 
-	_, metricsPort, err := params.OtelCol.Spec.Config.Service.MetricsEndpoint()
+	_, metricsPort, err := params.OtelCol.Spec.Config.Service.MetricsEndpoint(params.Log)
 	if err != nil {
 		return nil, err
 	}
@@ -108,6 +97,39 @@ func MonitoringService(params manifests.Params) (*corev1.Service, error) {
 	}, nil
 }
 
+func ExtensionService(params manifests.Params) (*corev1.Service, error) {
+	name := naming.ExtensionService(params.OtelCol.Name)
+	labels := manifestutils.Labels(params.OtelCol.ObjectMeta, name, params.OtelCol.Spec.Image, ComponentOpenTelemetryCollector, []string{})
+	labels[serviceTypeLabel] = ExtensionServiceType.String()
+
+	annotations, err := manifestutils.Annotations(params.OtelCol, params.Config.AnnotationsFilter())
+	if err != nil {
+		return nil, err
+	}
+
+	ports, err := params.OtelCol.Spec.Config.GetExtensionPorts(params.Log)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ports) == 0 {
+		return nil, nil
+	}
+
+	return &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   params.OtelCol.Namespace,
+			Labels:      labels,
+			Annotations: annotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Ports:    ports,
+			Selector: manifestutils.SelectorLabels(params.OtelCol.ObjectMeta, ComponentOpenTelemetryCollector),
+		},
+	}, nil
+}
+
 func Service(params manifests.Params) (*corev1.Service, error) {
 	name := naming.Service(params.OtelCol.Name)
 	labels := manifestutils.Labels(params.OtelCol.ObjectMeta, name, params.OtelCol.Spec.Image, ComponentOpenTelemetryCollector, []string{})
@@ -118,7 +140,7 @@ func Service(params manifests.Params) (*corev1.Service, error) {
 		return nil, err
 	}
 
-	ports, err := params.OtelCol.Spec.Config.GetAllPorts(params.Log)
+	ports, err := params.OtelCol.Spec.Config.GetReceiverAndExporterPorts(params.Log)
 	if err != nil {
 		return nil, err
 	}

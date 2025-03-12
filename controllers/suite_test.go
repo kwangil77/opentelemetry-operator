@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package controllers_test
 
@@ -48,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/yaml"
@@ -59,6 +49,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-operator/internal/autodetect/openshift"
 	"github.com/open-telemetry/opentelemetry-operator/internal/autodetect/prometheus"
 	autoRBAC "github.com/open-telemetry/opentelemetry-operator/internal/autodetect/rbac"
+	"github.com/open-telemetry/opentelemetry-operator/internal/autodetect/targetallocator"
 	"github.com/open-telemetry/opentelemetry-operator/internal/config"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests/collector/testdata"
@@ -72,8 +63,7 @@ var (
 	testScheme *runtime.Scheme = scheme.Scheme
 	ctx        context.Context
 	cancel     context.CancelFunc
-	err        error
-	cfg        *rest.Config
+	restCfg    *rest.Config
 	logger     = logf.Log.WithName("unit-tests")
 
 	instanceUID      = uuid.NewUUID()
@@ -101,17 +91,11 @@ type mockAutoDetect struct {
 	PrometheusCRsAvailabilityFunc   func() (prometheus.Availability, error)
 	RBACPermissionsFunc             func(ctx context.Context) (autoRBAC.Availability, error)
 	CertManagerAvailabilityFunc     func(ctx context.Context) (certmanager.Availability, error)
+	TargetAllocatorAvailabilityFunc func() (targetallocator.Availability, error)
 }
 
-func (m *mockAutoDetect) FIPSEnabled(ctx context.Context) bool {
+func (m *mockAutoDetect) FIPSEnabled(_ context.Context) bool {
 	return false
-}
-
-func (m *mockAutoDetect) PrometheusCRsAvailability() (prometheus.Availability, error) {
-	if m.PrometheusCRsAvailabilityFunc != nil {
-		return m.PrometheusCRsAvailabilityFunc()
-	}
-	return prometheus.NotAvailable, nil
 }
 
 func (m *mockAutoDetect) OpenShiftRoutesAvailability() (openshift.RoutesAvailability, error) {
@@ -119,6 +103,13 @@ func (m *mockAutoDetect) OpenShiftRoutesAvailability() (openshift.RoutesAvailabi
 		return m.OpenShiftRoutesAvailabilityFunc()
 	}
 	return openshift.RoutesNotAvailable, nil
+}
+
+func (m *mockAutoDetect) PrometheusCRsAvailability() (prometheus.Availability, error) {
+	if m.PrometheusCRsAvailabilityFunc != nil {
+		return m.PrometheusCRsAvailabilityFunc()
+	}
+	return prometheus.NotAvailable, nil
 }
 
 func (m *mockAutoDetect) RBACPermissions(ctx context.Context) (autoRBAC.Availability, error) {
@@ -135,15 +126,22 @@ func (m *mockAutoDetect) CertManagerAvailability(ctx context.Context) (certmanag
 	return certmanager.NotAvailable, nil
 }
 
+func (m *mockAutoDetect) TargetAllocatorAvailability() (targetallocator.Availability, error) {
+	if m.TargetAllocatorAvailabilityFunc != nil {
+		return m.TargetAllocatorAvailabilityFunc()
+	}
+	return targetallocator.NotAvailable, nil
+}
+
 func TestMain(m *testing.M) {
+	var err error
 	ctx, cancel = context.WithCancel(context.TODO())
 	defer cancel()
 
-	if err != nil {
-		fmt.Printf("failed to start testEnv: %v", err)
-		os.Exit(1)
-	}
+	// logging is useful for these tests
+	logf.SetLogger(zap.New())
 
+	// +kubebuilder:scaffold:scheme
 	utilruntime.Must(monitoringv1.AddToScheme(testScheme))
 	utilruntime.Must(networkingv1.AddToScheme(testScheme))
 	utilruntime.Must(routev1.AddToScheme(testScheme))
@@ -157,10 +155,13 @@ func TestMain(m *testing.M) {
 			Paths: []string{filepath.Join("..", "config", "webhook")},
 		},
 	}
-	cfg, err = testEnv.Start()
-	// +kubebuilder:scaffold:scheme
+	restCfg, err = testEnv.Start()
+	if err != nil {
+		fmt.Printf("failed to start testEnv: %v", err)
+		os.Exit(1)
+	}
 
-	k8sClient, err = client.New(cfg, client.Options{Scheme: testScheme})
+	k8sClient, err = client.New(restCfg, client.Options{Scheme: testScheme})
 	if err != nil {
 		fmt.Printf("failed to setup a Kubernetes client: %v", err)
 		os.Exit(1)
@@ -168,7 +169,7 @@ func TestMain(m *testing.M) {
 
 	// start webhook server using Manager
 	webhookInstallOptions := &testEnv.WebhookInstallOptions
-	mgr, mgrErr := ctrl.NewManager(cfg, ctrl.Options{
+	mgr, mgrErr := ctrl.NewManager(restCfg, ctrl.Options{
 		Scheme:         testScheme,
 		LeaderElection: false,
 		WebhookServer: webhook.NewServer(webhook.Options{
@@ -184,8 +185,8 @@ func TestMain(m *testing.M) {
 		fmt.Printf("failed to start webhook server: %v", mgrErr)
 		os.Exit(1)
 	}
-	clientset, clientErr := kubernetes.NewForConfig(cfg)
-	if err != nil {
+	clientset, clientErr := kubernetes.NewForConfig(restCfg)
+	if clientErr != nil {
 		fmt.Printf("failed to setup kubernetes clientset %v", clientErr)
 	}
 	reviewer := rbac.NewReviewer(clientset)
@@ -506,10 +507,10 @@ func populateObjectIfExists(t testing.TB, object client.Object, namespacedName t
 }
 
 func getConfigMapSHAFromString(configStr string) (string, error) {
-	var config v1beta1.Config
-	err := yaml.Unmarshal([]byte(configStr), &config)
+	var cfg v1beta1.Config
+	err := yaml.Unmarshal([]byte(configStr), &cfg)
 	if err != nil {
 		return "", err
 	}
-	return manifestutils.GetConfigMapSHA(config)
+	return manifestutils.GetConfigMapSHA(cfg)
 }

@@ -1,20 +1,10 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package instrumentation
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +19,7 @@ func TestInjectJavaagent(t *testing.T) {
 		v1alpha1.Java
 		pod      corev1.Pod
 		expected corev1.Pod
+		err      error
 	}{
 		{
 			name: "JAVA_TOOL_OPTIONS not defined",
@@ -81,6 +72,7 @@ func TestInjectJavaagent(t *testing.T) {
 					},
 				},
 			},
+			err: nil,
 		},
 		{
 			name: "add extensions to JAVA_TOOL_OPTIONS",
@@ -154,6 +146,7 @@ func TestInjectJavaagent(t *testing.T) {
 					},
 				},
 			},
+			err: nil,
 		},
 		{
 			name: "JAVA_TOOL_OPTIONS defined",
@@ -207,21 +200,18 @@ func TestInjectJavaagent(t *testing.T) {
 							Env: []corev1.EnvVar{
 								{
 									Name:  "JAVA_TOOL_OPTIONS",
-									Value: "-Dbaz=bar",
-								},
-								{
-									Name:  "JAVA_TOOL_OPTIONS",
-									Value: "$(JAVA_TOOL_OPTIONS) " + javaAgent,
+									Value: "-Dbaz=bar" + javaAgent,
 								},
 							},
 						},
 					},
 				},
 			},
+			err: nil,
 		},
 		{
 			name: "JAVA_TOOL_OPTIONS defined as ValueFrom",
-			Java: v1alpha1.Java{Image: "foo/bar:1", Resources: testResourceRequirements},
+			Java: v1alpha1.Java{Image: "foo/bar:1"},
 			pod: corev1.Pod{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
@@ -238,57 +228,27 @@ func TestInjectJavaagent(t *testing.T) {
 			},
 			expected: corev1.Pod{
 				Spec: corev1.PodSpec{
-					Volumes: []corev1.Volume{
-						{
-							Name: "opentelemetry-auto-instrumentation-java",
-							VolumeSource: corev1.VolumeSource{
-								EmptyDir: &corev1.EmptyDirVolumeSource{
-									SizeLimit: &defaultVolumeLimitSize,
-								},
-							},
-						},
-					},
-					InitContainers: []corev1.Container{
-						{
-							Name:    "opentelemetry-auto-instrumentation-java",
-							Image:   "foo/bar:1",
-							Command: []string{"cp", "/javaagent.jar", "/otel-auto-instrumentation-java/javaagent.jar"},
-							VolumeMounts: []corev1.VolumeMount{{
-								Name:      "opentelemetry-auto-instrumentation-java",
-								MountPath: "/otel-auto-instrumentation-java",
-							}},
-							Resources: testResourceRequirements,
-						},
-					},
 					Containers: []corev1.Container{
 						{
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "opentelemetry-auto-instrumentation-java",
-									MountPath: "/otel-auto-instrumentation-java",
-								},
-							},
 							Env: []corev1.EnvVar{
 								{
 									Name:      "JAVA_TOOL_OPTIONS",
 									ValueFrom: &corev1.EnvVarSource{},
-								},
-								{
-									Name:  "JAVA_TOOL_OPTIONS",
-									Value: "$(JAVA_TOOL_OPTIONS) " + javaAgent,
 								},
 							},
 						},
 					},
 				},
 			},
+			err: fmt.Errorf("the container defines env var value via ValueFrom, envVar: %s", envJavaToolsOptions),
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			pod := injectJavaagent(test.Java, test.pod, 0)
+			pod, err := injectJavaagent(test.Java, test.pod, 0)
 			assert.Equal(t, test.expected, pod)
+			assert.Equal(t, test.err, err)
 		})
 	}
 }

@@ -1,25 +1,15 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package v1beta1
 
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"net"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -206,7 +196,12 @@ func (c *Config) getPortsForComponentKinds(logger logr.Logger, componentKinds ..
 		case KindProcessor:
 			continue
 		case KindExtension:
-			continue
+			retriever = extensions.ParserFor
+			if c.Extensions == nil {
+				cfg = AnyConfig{}
+			} else {
+				cfg = *c.Extensions
+			}
 		}
 		for componentName := range enabledComponents[componentKind] {
 			// TODO: Clean up the naming here and make it simpler to use a retriever.
@@ -264,7 +259,7 @@ func (c *Config) getEnvironmentVariablesForComponentKinds(logger logr.Logger, co
 
 // applyDefaultForComponentKinds applies defaults to the endpoints for the given ComponentKind(s).
 func (c *Config) applyDefaultForComponentKinds(logger logr.Logger, componentKinds ...ComponentKind) error {
-	if err := c.Service.ApplyDefaults(); err != nil {
+	if err := c.Service.ApplyDefaults(logger); err != nil {
 		return err
 	}
 	enabledComponents := c.GetEnabledComponents()
@@ -300,6 +295,9 @@ func (c *Config) applyDefaultForComponentKinds(logger logr.Logger, componentKind
 				continue
 			}
 
+			if componentConf == nil {
+				componentConf = map[string]interface{}{}
+			}
 			if err := mergo.Merge(&mappedCfg, componentConf); err != nil {
 				return err
 			}
@@ -318,8 +316,16 @@ func (c *Config) GetExporterPorts(logger logr.Logger) ([]corev1.ServicePort, err
 	return c.getPortsForComponentKinds(logger, KindExporter)
 }
 
-func (c *Config) GetAllPorts(logger logr.Logger) ([]corev1.ServicePort, error) {
+func (c *Config) GetExtensionPorts(logger logr.Logger) ([]corev1.ServicePort, error) {
+	return c.getPortsForComponentKinds(logger, KindExtension)
+}
+
+func (c *Config) GetReceiverAndExporterPorts(logger logr.Logger) ([]corev1.ServicePort, error) {
 	return c.getPortsForComponentKinds(logger, KindReceiver, KindExporter)
+}
+
+func (c *Config) GetAllPorts(logger logr.Logger) ([]corev1.ServicePort, error) {
+	return c.getPortsForComponentKinds(logger, KindReceiver, KindExporter, KindExtension)
 }
 
 func (c *Config) GetEnvironmentVariables(logger logr.Logger) ([]corev1.EnvVar, error) {
@@ -414,37 +420,60 @@ type Service struct {
 	Pipelines map[string]*Pipeline `json:"pipelines" yaml:"pipelines"`
 }
 
-// MetricsEndpoint gets the port number and host address for the metrics endpoint from the collector config if it has been set.
-func (s *Service) MetricsEndpoint() (string, int32, error) {
-	defaultAddr := "0.0.0.0"
-	if s.GetTelemetry() == nil {
-		// telemetry isn't set, use the default
-		return defaultAddr, 8888, nil
+const (
+	defaultServicePort int32 = 8888
+	defaultServiceHost       = "0.0.0.0"
+)
+
+// MetricsEndpoint attempts gets the host and port number from the host address without doing any validation regarding the
+// address itself.
+// It works even before env var expansion happens, when a simple `net.SplitHostPort` would fail because of the extra colon
+// from the env var, i.e. the address looks like "${env:POD_IP}:4317", "${env:POD_IP}", or "${POD_IP}".
+// In cases which the port itself is a variable, i.e. "${env:POD_IP}:${env:PORT}", this returns an error. This happens
+// because the port is used to generate Service objects and mappings.
+func (s *Service) MetricsEndpoint(logger logr.Logger) (string, int32, error) {
+	telemetry := s.GetTelemetry()
+	if telemetry == nil || telemetry.Metrics.Address == "" {
+		return defaultServiceHost, defaultServicePort, nil
 	}
-	host, port, netErr := net.SplitHostPort(s.GetTelemetry().Metrics.Address)
-	if netErr != nil && strings.Contains(netErr.Error(), "missing port in address") {
-		return defaultAddr, 8888, nil
-	} else if netErr != nil {
-		return "", 0, netErr
+
+	// The regex below matches on strings that end with a colon followed by the environment variable expansion syntax.
+	// So it should match on strings ending with: ":${env:POD_IP}" or ":${POD_IP}".
+	const portEnvVarRegex = `:\${[env:]?.*}$`
+	isPortEnvVar := regexp.MustCompile(portEnvVarRegex).MatchString(telemetry.Metrics.Address)
+	if isPortEnvVar {
+		errMsg := fmt.Sprintf("couldn't determine metrics port from configuration: %s",
+			telemetry.Metrics.Address)
+		logger.Info(errMsg)
+		return "", 0, errors.New(errMsg)
 	}
-	i64, err := strconv.ParseInt(port, 10, 32)
+
+	// The regex below matches on strings that end with a colon followed by 1 or more numbers (representing the port).
+	const explicitPortRegex = `:(\d+$)`
+	explicitPortMatches := regexp.MustCompile(explicitPortRegex).FindStringSubmatch(telemetry.Metrics.Address)
+	if len(explicitPortMatches) <= 1 {
+		return telemetry.Metrics.Address, defaultServicePort, nil
+	}
+
+	port, err := strconv.ParseInt(explicitPortMatches[1], 10, 32)
 	if err != nil {
+		errMsg := fmt.Sprintf("couldn't determine metrics port from configuration: %s",
+			telemetry.Metrics.Address)
+		logger.Info(errMsg, "error", err)
 		return "", 0, err
 	}
 
-	if host == "" {
-		host = defaultAddr
-	}
-
-	return host, int32(i64), nil
+	host, _, _ := strings.Cut(telemetry.Metrics.Address, explicitPortMatches[0])
+	return host, int32(port), nil
 }
 
 // ApplyDefaults inserts configuration defaults if it has not been set.
-func (s *Service) ApplyDefaults() error {
-	telemetryAddr, telemetryPort, err := s.MetricsEndpoint()
+func (s *Service) ApplyDefaults(logger logr.Logger) error {
+	telemetryAddr, telemetryPort, err := s.MetricsEndpoint(logger)
 	if err != nil {
 		return err
 	}
+
 	tm := &AnyConfig{
 		Object: map[string]interface{}{
 			"metrics": map[string]interface{}{
