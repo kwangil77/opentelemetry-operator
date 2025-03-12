@@ -22,13 +22,13 @@ jobs:
       uses: actions/setup-go@v5
       id: setup-go
       with:
-        go-version: "~1.22.4"
+        go-version: "~1.24.1"
 
     - name: Cache tools
       uses: actions/cache@v4
       with:
         path: bin
-        key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.setup-go.outputs.go-version }}
+        key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.setup-go.outputs.go-version }}
 
     - name: Install tools
       run: make install-tools
@@ -45,15 +45,15 @@ jobs:
 
     - name: Set up Go
       uses: actions/setup-go@v5
+      id: setup-go
       with:
-        go-version: "~1.22.4"
+        go-version: "~1.24.1"
 
     - name: Cache tools
       uses: actions/cache@v4
-      id: setup-go
       with:
         path: bin
-        key: ${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.setup-go.outputs.go-version }}
+        key: tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Makefile') }}-${{ steps.setup-go.outputs.go-version }}
 
     - name: Install tools
       run: make install-tools
@@ -62,8 +62,6 @@ jobs:
       with:
         path: |
           /home/runner/.cache/golangci-lint
-          /home/runner/go/pkg/mod
-          ./bin
         key: golangcilint-${{ hashFiles('**/go.sum') }}
         restore-keys: |
           golangcilint-
@@ -81,7 +79,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v5
       with:
-        go-version: "~1.22.4"
+        go-version: "~1.24.1"
 
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
@@ -93,3 +91,6 @@ jobs:
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
+
+    - name: Govulncheck
+      uses: golang/govulncheck-action@v1

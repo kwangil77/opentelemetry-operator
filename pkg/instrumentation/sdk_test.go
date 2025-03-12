@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package instrumentation
 
@@ -156,10 +145,9 @@ func TestSDKInjection(t *testing.T) {
 						},
 					},
 					Labels: map[string]string{
-						"app.kubernetes.io/name":     "app-name",
-						"app.kubernetes.io/instance": "app-id",
-						"app.kubernetes.io/version":  "v1",
-						"app.kubernetes.io/part-of":  "shop",
+						"app.kubernetes.io/name":    "app-name",
+						"app.kubernetes.io/version": "v1",
+						"app.kubernetes.io/part-of": "shop",
 					},
 					Annotations: map[string]string{
 						"resource.opentelemetry.io/foo": "bar",
@@ -180,10 +168,9 @@ func TestSDKInjection(t *testing.T) {
 					Name:      "app",
 					UID:       "pod-uid",
 					Labels: map[string]string{
-						"app.kubernetes.io/name":     "app-name",
-						"app.kubernetes.io/instance": "app-id",
-						"app.kubernetes.io/version":  "v1",
-						"app.kubernetes.io/part-of":  "shop",
+						"app.kubernetes.io/name":    "app-name",
+						"app.kubernetes.io/version": "v1",
+						"app.kubernetes.io/part-of": "shop",
 					},
 					Annotations: map[string]string{
 						"resource.opentelemetry.io/foo": "bar",
@@ -396,10 +383,9 @@ func TestSDKInjection(t *testing.T) {
 						},
 					},
 					Labels: map[string]string{
-						"app.kubernetes.io/name":     "app-name",
-						"app.kubernetes.io/instance": "app-id",
-						"app.kubernetes.io/version":  "v1",
-						"app.kubernetes.io/part-of":  "shop",
+						"app.kubernetes.io/name":    "app-name",
+						"app.kubernetes.io/version": "v1",
+						"app.kubernetes.io/part-of": "shop",
 					},
 					Annotations: map[string]string{
 						"resource.opentelemetry.io/foo": "bar",
@@ -420,10 +406,9 @@ func TestSDKInjection(t *testing.T) {
 					Name:      "app",
 					UID:       "pod-uid",
 					Labels: map[string]string{
-						"app.kubernetes.io/name":     "app-name",
-						"app.kubernetes.io/instance": "app-id",
-						"app.kubernetes.io/version":  "v1",
-						"app.kubernetes.io/part-of":  "shop",
+						"app.kubernetes.io/name":    "app-name",
+						"app.kubernetes.io/version": "v1",
+						"app.kubernetes.io/part-of": "shop",
 					},
 					Annotations: map[string]string{
 						"resource.opentelemetry.io/foo": "bar",
@@ -481,7 +466,7 @@ func TestSDKInjection(t *testing.T) {
 								},
 								{
 									Name:  "OTEL_RESOURCE_ATTRIBUTES",
-									Value: "foo=bar,k8s.container.name=application-name,k8s.deployment.name=my-deployment,k8s.deployment.uid=depuid,k8s.namespace.name=project1,k8s.node.name=$(OTEL_RESOURCE_ATTRIBUTES_NODE_NAME),k8s.pod.name=$(OTEL_RESOURCE_ATTRIBUTES_POD_NAME),k8s.pod.uid=pod-uid,k8s.replicaset.name=my-replicaset,k8s.replicaset.uid=rsuid,service.instance.id=app-id,service.namespace=shop,service.version=v1",
+									Value: "foo=bar,k8s.container.name=application-name,k8s.deployment.name=my-deployment,k8s.deployment.uid=depuid,k8s.namespace.name=project1,k8s.node.name=$(OTEL_RESOURCE_ATTRIBUTES_NODE_NAME),k8s.pod.name=$(OTEL_RESOURCE_ATTRIBUTES_POD_NAME),k8s.pod.uid=pod-uid,k8s.replicaset.name=my-replicaset,k8s.replicaset.uid=rsuid,service.instance.id=project1.$(OTEL_RESOURCE_ATTRIBUTES_POD_NAME).application-name,service.namespace=shop,service.version=v1",
 								},
 							},
 						},
@@ -516,10 +501,9 @@ func TestSDKInjection(t *testing.T) {
 					Namespace: "project1",
 					Name:      "app",
 					Labels: map[string]string{
-						"app.kubernetes.io/name":     "not-used",
-						"app.kubernetes.io/instance": "not-used",
-						"app.kubernetes.io/version":  "not-used",
-						"app.kubernetes.io/part-of":  "not-used",
+						"app.kubernetes.io/name":    "not-used",
+						"app.kubernetes.io/version": "not-used",
+						"app.kubernetes.io/part-of": "not-used",
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -557,10 +541,9 @@ func TestSDKInjection(t *testing.T) {
 					Namespace: "project1",
 					Name:      "app",
 					Labels: map[string]string{
-						"app.kubernetes.io/name":     "not-used",
-						"app.kubernetes.io/instance": "not-used",
-						"app.kubernetes.io/version":  "not-used",
-						"app.kubernetes.io/part-of":  "not-used",
+						"app.kubernetes.io/name":    "not-used",
+						"app.kubernetes.io/version": "not-used",
+						"app.kubernetes.io/part-of": "not-used",
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -2566,6 +2549,88 @@ func TestChooseServiceName(t *testing.T) {
 			}, test.useLabelsForResourceAttributes, test.resources, test.index)
 
 			assert.Equal(t, test.expectedServiceName, serviceName)
+		})
+	}
+}
+
+func TestAppendIfNotSet(t *testing.T) {
+	tests := []struct {
+		name    string
+		envVars []corev1.EnvVar
+		newVars []corev1.EnvVar
+		result  []corev1.EnvVar
+	}{
+		{
+			name: "add to empty",
+			newVars: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "bar",
+				},
+			},
+			result: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "bar",
+				},
+			},
+		},
+		{
+			name: "do not update if set",
+			envVars: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "bar",
+				},
+			},
+			newVars: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "foobar",
+				},
+			},
+			result: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "bar",
+				},
+			},
+		},
+		{
+			name: "mixed use",
+			envVars: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "bar",
+				},
+			},
+			newVars: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "foobar",
+				},
+				{
+					Name:  "alpha",
+					Value: "beta",
+				},
+			},
+			result: []corev1.EnvVar{
+				{
+					Name:  "foo",
+					Value: "bar",
+				},
+				{
+					Name:  "alpha",
+					Value: "beta",
+				},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := appendIfNotSet(test.envVars, test.newVars...)
+			assert.Equal(t, test.result, result)
 		})
 	}
 }

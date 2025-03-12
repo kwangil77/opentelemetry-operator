@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package collector
 
@@ -45,17 +34,6 @@ func TestTargetAllocator(t *testing.T) {
 	privileged := true
 	runAsUser := int64(1337)
 	runasGroup := int64(1338)
-	otelcolConfig := v1beta1.Config{
-		Receivers: v1beta1.AnyConfig{
-			Object: map[string]interface{}{
-				"prometheus": map[string]any{
-					"config": map[string]any{
-						"scrape_configs": []any{},
-					},
-				},
-			},
-		},
-	}
 
 	testCases := []struct {
 		name    string
@@ -79,7 +57,6 @@ func TestTargetAllocator(t *testing.T) {
 			input: v1beta1.OpenTelemetryCollector{
 				ObjectMeta: objectMetadata,
 				Spec: v1beta1.OpenTelemetryCollectorSpec{
-					Config: otelcolConfig,
 					TargetAllocator: v1beta1.TargetAllocatorEmbedded{
 						Enabled: true,
 					},
@@ -87,7 +64,9 @@ func TestTargetAllocator(t *testing.T) {
 			},
 			want: &v1alpha1.TargetAllocator{
 				ObjectMeta: objectMetadata,
-				Spec:       v1alpha1.TargetAllocatorSpec{},
+				Spec: v1alpha1.TargetAllocatorSpec{
+					GlobalConfig: v1beta1.AnyConfig{},
+				},
 			},
 		},
 		{
@@ -190,7 +169,6 @@ func TestTargetAllocator(t *testing.T) {
 							},
 						},
 					},
-					Config: otelcolConfig,
 				},
 			},
 			want: &v1alpha1.TargetAllocator{

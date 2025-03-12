@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package instrumentation
 
@@ -59,6 +48,7 @@ func (i *sdkInjector) inject(ctx context.Context, insts languageInstrumentations
 	}
 	if insts.Java.Instrumentation != nil {
 		otelinst := *insts.Java.Instrumentation
+		var err error
 		i.logger.V(1).Info("injecting Java instrumentation into pod", "otelinst-namespace", otelinst.Namespace, "otelinst-name", otelinst.Name)
 
 		if len(insts.Java.Containers) == 0 {
@@ -67,10 +57,14 @@ func (i *sdkInjector) inject(ctx context.Context, insts languageInstrumentations
 
 		for _, container := range insts.Java.Containers {
 			index := getContainerIndex(container, pod)
-			pod = injectJavaagent(otelinst.Spec.Java, pod, index)
-			pod = i.injectCommonEnvVar(otelinst, pod, index)
-			pod = i.injectCommonSDKConfig(ctx, otelinst, ns, pod, index, index)
-			pod = i.setInitContainerSecurityContext(pod, pod.Spec.Containers[index].SecurityContext, javaInitContainerName)
+			pod, err = injectJavaagent(otelinst.Spec.Java, pod, index)
+			if err != nil {
+				i.logger.Info("Skipping javaagent injection", "reason", err.Error(), "container", pod.Spec.Containers[index].Name)
+			} else {
+				pod = i.injectCommonEnvVar(otelinst, pod, index)
+				pod = i.injectCommonSDKConfig(ctx, otelinst, ns, pod, index, index)
+				pod = i.setInitContainerSecurityContext(pod, pod.Spec.Containers[index].SecurityContext, javaInitContainerName)
+			}
 		}
 	}
 	if insts.NodeJS.Instrumentation != nil {
@@ -105,7 +99,7 @@ func (i *sdkInjector) inject(ctx context.Context, insts languageInstrumentations
 
 		for _, container := range insts.Python.Containers {
 			index := getContainerIndex(container, pod)
-			pod, err = injectPythonSDK(otelinst.Spec.Python, pod, index)
+			pod, err = injectPythonSDK(otelinst.Spec.Python, pod, index, insts.Python.AdditionalAnnotations[annotationPythonPlatform])
 			if err != nil {
 				i.logger.Info("Skipping Python SDK injection", "reason", err.Error(), "container", pod.Spec.Containers[index].Name)
 			} else {
@@ -469,11 +463,16 @@ func chooseServiceVersion(pod corev1.Pod, useLabelsForResourceAttributes bool, i
 
 // chooseServiceInstanceId returns the service.instance.id to be used in the instrumentation.
 // The precedence is as follows:
-//  1. annotation with key "service.instance.id" or "app.kubernetes.io/instance"
+//  1. annotation with key "service.instance.id"
 //  2. namespace name + pod name + container name
 //     (as defined by https://opentelemetry.io/docs/specs/semconv/resource/#service-experimental)
-func createServiceInstanceId(pod corev1.Pod, useLabelsForResourceAttributes bool, namespaceName, podName, containerName string) string {
-	serviceInstanceId := chooseLabelOrAnnotation(pod, useLabelsForResourceAttributes, semconv.ServiceInstanceIDKey, constants.LabelAppInstance)
+func createServiceInstanceId(pod corev1.Pod, namespaceName, podName, containerName string) string {
+	// Do not use labels for service instance id,
+	// because multiple containers in the same pod would get the same service instance id,
+	// which violates the uniqueness requirement of service instance id -
+	// see https://opentelemetry.io/docs/specs/semconv/resource/#service-experimental.
+	// We still allow the user to set the service instance id via annotation, because this is explicitly set by the user.
+	serviceInstanceId := chooseLabelOrAnnotation(pod, false, semconv.ServiceInstanceIDKey, "")
 	if serviceInstanceId != "" {
 		return serviceInstanceId
 	}
@@ -522,7 +521,7 @@ func (i *sdkInjector) createResourceMap(ctx context.Context, otelinst v1alpha1.I
 	k8sResources[semconv.K8SPodNameKey] = pod.Name
 	k8sResources[semconv.K8SPodUIDKey] = string(pod.UID)
 	k8sResources[semconv.K8SNodeNameKey] = pod.Spec.NodeName
-	k8sResources[semconv.ServiceInstanceIDKey] = createServiceInstanceId(pod, useLabelsForResourceAttributes, ns.Name, fmt.Sprintf("$(%s)", constants.EnvPodName), pod.Spec.Containers[index].Name)
+	k8sResources[semconv.ServiceInstanceIDKey] = createServiceInstanceId(pod, ns.Name, fmt.Sprintf("$(%s)", constants.EnvPodName), pod.Spec.Containers[index].Name)
 	i.addParentResourceLabels(ctx, otelinst.Spec.Resource.AddK8sUIDAttributes, ns, pod.ObjectMeta, k8sResources)
 
 	for k, v := range k8sResources {
@@ -649,6 +648,20 @@ func getIndexOfEnv(envs []corev1.EnvVar, name string) int {
 		}
 	}
 	return -1
+}
+
+func appendIfNotSet(envs []corev1.EnvVar, newEnvVars ...corev1.EnvVar) []corev1.EnvVar {
+	keys := make(map[string]struct{}, len(envs))
+	for _, e := range envs {
+		keys[e.Name] = struct{}{}
+	}
+	for _, envVar := range newEnvVars {
+		if _, ok := keys[envVar.Name]; !ok {
+			envs = append(envs, envVar)
+			keys[envVar.Name] = struct{}{}
+		}
+	}
+	return envs
 }
 
 func moveEnvToListEnd(envs []corev1.EnvVar, idx int) []corev1.EnvVar {

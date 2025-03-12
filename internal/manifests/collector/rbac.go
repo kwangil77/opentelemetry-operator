@@ -1,26 +1,19 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package collector
 
 import (
+	"context"
+	"fmt"
+
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests/manifestutils"
 	"github.com/open-telemetry/opentelemetry-operator/internal/naming"
+	"github.com/open-telemetry/opentelemetry-operator/internal/rbac"
 )
 
 func ClusterRole(params manifests.Params) (*rbacv1.ClusterRole, error) {
@@ -84,4 +77,27 @@ func ClusterRoleBinding(params manifests.Params) (*rbacv1.ClusterRoleBinding, er
 			APIGroup: "rbac.authorization.k8s.io",
 		},
 	}, nil
+}
+
+func CheckRbacRules(params manifests.Params, saName string) ([]string, error) {
+	ctx := context.Background()
+
+	rules, err := params.OtelCol.Spec.Config.GetAllRbacRules(params.Log)
+	if err != nil {
+		return nil, err
+	}
+
+	r := []*rbacv1.PolicyRule{}
+
+	for _, rule := range rules {
+		rule := rule
+		r = append(r, &rule)
+	}
+
+	if subjectAccessReviews, err := params.Reviewer.CheckPolicyRules(ctx, saName, params.OtelCol.Namespace, r...); err != nil {
+		return nil, fmt.Errorf("%s: %w", "unable to check rbac rules", err)
+	} else if allowed, deniedReviews := rbac.AllSubjectAccessReviewsAllowed(subjectAccessReviews); !allowed {
+		return rbac.WarningsGroupedByResource(deniedReviews), nil
+	}
+	return nil, nil
 }

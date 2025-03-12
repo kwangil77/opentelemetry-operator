@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1
 
@@ -128,13 +117,13 @@ func (w InstrumentationWebhook) defaulter(r *Instrumentation) error {
 	if r.Spec.Python.Resources.Limits == nil {
 		r.Spec.Python.Resources.Limits = corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("500m"),
-			corev1.ResourceMemory: resource.MustParse("32Mi"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
 		}
 	}
 	if r.Spec.Python.Resources.Requests == nil {
 		r.Spec.Python.Resources.Requests = corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("50m"),
-			corev1.ResourceMemory: resource.MustParse("32Mi"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
 		}
 	}
 	if r.Spec.DotNet.Image == "" {
@@ -158,13 +147,13 @@ func (w InstrumentationWebhook) defaulter(r *Instrumentation) error {
 	if r.Spec.Go.Resources.Limits == nil {
 		r.Spec.Go.Resources.Limits = corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("500m"),
-			corev1.ResourceMemory: resource.MustParse("32Mi"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
 		}
 	}
 	if r.Spec.Go.Resources.Requests == nil {
 		r.Spec.Go.Resources.Requests = corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("50m"),
-			corev1.ResourceMemory: resource.MustParse("32Mi"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
 		}
 	}
 	if r.Spec.ApacheHttpd.Image == "" {

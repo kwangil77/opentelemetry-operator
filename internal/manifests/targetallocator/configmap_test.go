@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package targetallocator
 
@@ -171,6 +160,14 @@ prometheus_cr:
     matchlabels:
       release: my-instance
     matchexpressions: []
+  probe_selector:
+    matchlabels:
+      release: my-instance
+    matchexpressions: []
+  scrape_config_selector:
+    matchlabels:
+      release: my-instance
+    matchexpressions: []
   service_monitor_selector:
     matchlabels:
       release: my-instance
@@ -185,6 +182,14 @@ prometheus_cr:
 			},
 		}
 		targetAllocator.Spec.PrometheusCR.ServiceMonitorSelector = &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				"release": "my-instance",
+			}}
+		targetAllocator.Spec.PrometheusCR.ScrapeConfigSelector = &metav1.LabelSelector{
+			MatchLabels: map[string]string{
+				"release": "my-instance",
+			}}
+		targetAllocator.Spec.PrometheusCR.ProbeSelector = &metav1.LabelSelector{
 			MatchLabels: map[string]string{
 				"release": "my-instance",
 			}}
@@ -224,6 +229,8 @@ filter_strategy: relabel-config
 prometheus_cr:
   enabled: true
   pod_monitor_selector: null
+  probe_selector: null
+  scrape_config_selector: null
   scrape_interval: 30s
   service_monitor_selector: null
 `,
@@ -285,6 +292,67 @@ https:
 prometheus_cr:
   enabled: true
   pod_monitor_selector: null
+  probe_selector: null
+  scrape_config_selector: null
+  scrape_interval: 30s
+  service_monitor_selector: null
+`,
+		}
+
+		actual, err := ConfigMap(testParams)
+		assert.NoError(t, err)
+
+		assert.Equal(t, "my-instance-targetallocator", actual.Name)
+		assert.Equal(t, expectedLabels, actual.Labels)
+		assert.Equal(t, expectedData, actual.Data)
+	})
+
+	t.Run("should return expected target allocator config map allocation fallback strategy", func(t *testing.T) {
+		expectedLabels["app.kubernetes.io/component"] = "opentelemetry-targetallocator"
+		expectedLabels["app.kubernetes.io/name"] = "my-instance-targetallocator"
+
+		cfg := config.New(config.WithCertManagerAvailability(certmanager.Available))
+
+		flgs := featuregate.Flags(colfg.GlobalRegistry())
+		err := flgs.Parse([]string{"--feature-gates=operator.targetallocator.fallbackstrategy"})
+		require.NoError(t, err)
+
+		testParams := Params{
+			Collector:       collector,
+			TargetAllocator: targetAllocator,
+			Config:          cfg,
+		}
+
+		expectedData := map[string]string{
+			targetAllocatorFilename: `allocation_fallback_strategy: consistent-hashing
+allocation_strategy: consistent-hashing
+collector_selector:
+  matchlabels:
+    app.kubernetes.io/component: opentelemetry-collector
+    app.kubernetes.io/instance: default.my-instance
+    app.kubernetes.io/managed-by: opentelemetry-operator
+    app.kubernetes.io/part-of: opentelemetry
+  matchexpressions: []
+config:
+  scrape_configs:
+  - job_name: otel-collector
+    scrape_interval: 10s
+    static_configs:
+    - targets:
+      - 0.0.0.0:8888
+      - 0.0.0.0:9999
+filter_strategy: relabel-config
+https:
+  ca_file_path: /tls/ca.crt
+  enabled: true
+  listen_addr: :8443
+  tls_cert_file_path: /tls/tls.crt
+  tls_key_file_path: /tls/tls.key
+prometheus_cr:
+  enabled: true
+  pod_monitor_selector: null
+  probe_selector: null
+  scrape_config_selector: null
   scrape_interval: 30s
   service_monitor_selector: null
 `,

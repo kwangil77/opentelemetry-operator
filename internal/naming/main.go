@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 // Package naming is for determining the names for components (containers, services, ...).
 package naming
@@ -114,6 +103,11 @@ func HeadlessService(otelcol string) string {
 // MonitoringService builds the name for the monitoring service based on the instance.
 func MonitoringService(otelcol string) string {
 	return DNSName(Truncate("%s-monitoring", 63, Service(otelcol)))
+}
+
+// ExtensionService builds the name for the extension service based on the instance.
+func ExtensionService(otelcol string) string {
+	return DNSName(Truncate("%s-extension", 63, Service(otelcol)))
 }
 
 // Service builds the service name based on the instance.

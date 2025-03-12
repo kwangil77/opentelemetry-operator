@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package components
 
@@ -49,6 +38,10 @@ type RBACRuleGenerator[ComponentConfigType any] func(logger logr.Logger, config 
 // It's expected that type Config is the configuration used by a parser.
 type ProbeGenerator[ComponentConfigType any] func(logger logr.Logger, config ComponentConfigType) (*corev1.Probe, error)
 
+// EnvVarGenerator is a function that generates a list of environment variables for a given config.
+// It's expected that type Config is the configuration used by a parser.
+type EnvVarGenerator[ComponentConfigType any] func(logger logr.Logger, config ComponentConfigType) ([]corev1.EnvVar, error)
+
 // Defaulter is a function that applies given defaults to the passed Config.
 // It's expected that type Config is the configuration used by a parser.
 type Defaulter[ComponentConfigType any] func(logger logr.Logger, defaultAddr string, defaultPort int32, config ComponentConfigType) (map[string]interface{}, error)
@@ -85,7 +78,7 @@ func PortFromEndpoint(endpoint string) (int32, error) {
 		return UnsetPort, PortNotFoundErr
 	}
 
-	return int32(port), err
+	return int32(port), err //nolint: gosec // disable G115, this is guaranteed to not overflow due to the bitSize in the ParseInt call
 }
 
 type ParserRetriever func(string) Parser
@@ -104,6 +97,9 @@ type Parser interface {
 
 	// GetLivenessProbe returns a liveness probe set for the collector
 	GetLivenessProbe(logger logr.Logger, config interface{}) (*corev1.Probe, error)
+
+	// GetEnvironmentVariables returns a list of environment variables for the collector
+	GetEnvironmentVariables(logger logr.Logger, config interface{}) ([]corev1.EnvVar, error)
 
 	// GetReadinessProbe returns a readiness probe set for the collector
 	GetReadinessProbe(logger logr.Logger, config interface{}) (*corev1.Probe, error)

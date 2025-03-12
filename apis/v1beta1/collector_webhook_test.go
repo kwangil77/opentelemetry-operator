@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package v1beta1_test
 
@@ -83,7 +72,7 @@ func TestValidate(t *testing.T) {
 		},
 	}
 
-	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+	bv := func(_ context.Context, collector v1beta1.OpenTelemetryCollector) admission.Warnings {
 		var warnings admission.Warnings
 		cfg := config.New(
 			config.WithCollectorImage("default-collector"),
@@ -518,7 +507,7 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 		},
 	}
 
-	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+	bv := func(_ context.Context, collector v1beta1.OpenTelemetryCollector) admission.Warnings {
 		var warnings admission.Warnings
 		cfg := config.New(
 			config.WithCollectorImage("default-collector"),
@@ -555,7 +544,7 @@ func TestCollectorDefaultingWebhook(t *testing.T) {
 			ctx := context.Background()
 			err := cvw.Default(ctx, &test.otelcol)
 			if test.expected.Spec.Config.Service.Telemetry == nil {
-				assert.NoError(t, test.expected.Spec.Config.Service.ApplyDefaults(), "could not apply defaults")
+				assert.NoError(t, test.expected.Spec.Config.Service.ApplyDefaults(logr.Discard()), "could not apply defaults")
 			}
 			assert.NoError(t, err)
 			assert.Equal(t, test.expected, test.otelcol)
@@ -588,7 +577,17 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 	five := int32(5)
 	maxInt := int32(math.MaxInt32)
 
-	cfg := v1beta1.Config{}
+	cfg := v1beta1.Config{
+		Service: v1beta1.Service{
+			Telemetry: &v1beta1.AnyConfig{
+				Object: map[string]interface{}{
+					"metrics": map[string]interface{}{
+						"address": "${env:POD_ID}:8888",
+					},
+				},
+			},
+		},
+	}
 	err := yaml.Unmarshal([]byte(cfgYaml), &cfg)
 	require.NoError(t, err)
 
@@ -1365,7 +1364,7 @@ func TestOTELColValidatingWebhook(t *testing.T) {
 		},
 	}
 
-	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+	bv := func(_ context.Context, collector v1beta1.OpenTelemetryCollector) admission.Warnings {
 		var warnings admission.Warnings
 		cfg := config.New(
 			config.WithCollectorImage("default-collector"),
@@ -1433,7 +1432,7 @@ func TestOTELColValidateUpdateWebhook(t *testing.T) {
 		},
 	}
 
-	bv := func(collector v1beta1.OpenTelemetryCollector) admission.Warnings {
+	bv := func(_ context.Context, collector v1beta1.OpenTelemetryCollector) admission.Warnings {
 		var warnings admission.Warnings
 		cfg := config.New(
 			config.WithCollectorImage("default-collector"),

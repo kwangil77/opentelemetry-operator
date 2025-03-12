@@ -1,16 +1,5 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package controllers
 
@@ -21,8 +10,8 @@ import (
 
 	"github.com/go-logr/logr"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -35,6 +24,7 @@ import (
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests/collector"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests/opampbridge"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests/targetallocator"
+	"github.com/open-telemetry/opentelemetry-operator/pkg/featuregate"
 )
 
 func isNamespaceScoped(obj client.Object) bool {
@@ -59,22 +49,26 @@ func BuildCollector(params manifests.Params) ([]client.Object, error) {
 		}
 		resources = append(resources, objs...)
 	}
-	// TODO: Remove this after TargetAllocator CRD is reconciled
-	if params.TargetAllocator != nil {
-		taParams := targetallocator.Params{
-			Client:          params.Client,
-			Scheme:          params.Scheme,
-			Recorder:        params.Recorder,
-			Log:             params.Log,
-			Config:          params.Config,
-			Collector:       &params.OtelCol,
-			TargetAllocator: *params.TargetAllocator,
+	// If we're not building a TargetAllocator CRD, then we need to separately invoke its builder
+	// to directly build the manifests. This is what used to happen before the TargetAllocator CRD
+	// was introduced.
+	if !featuregate.CollectorUsesTargetAllocatorCR.IsEnabled() {
+		if params.TargetAllocator != nil {
+			taParams := targetallocator.Params{
+				Client:          params.Client,
+				Scheme:          params.Scheme,
+				Recorder:        params.Recorder,
+				Log:             params.Log,
+				Config:          params.Config,
+				Collector:       &params.OtelCol,
+				TargetAllocator: *params.TargetAllocator,
+			}
+			taResources, err := BuildTargetAllocator(taParams)
+			if err != nil {
+				return nil, err
+			}
+			resources = append(resources, taResources...)
 		}
-		taResources, err := BuildTargetAllocator(taParams)
-		if err != nil {
-			return nil, err
-		}
-		resources = append(resources, taResources...)
 	}
 	return resources, nil
 }
@@ -114,18 +108,32 @@ func BuildTargetAllocator(params targetallocator.Params) ([]client.Object, error
 // getList queries the Kubernetes API to list the requested resource, setting the list l of type T.
 func getList[T client.Object](ctx context.Context, cl client.Client, l T, options ...client.ListOption) (map[types.UID]client.Object, error) {
 	ownedObjects := map[types.UID]client.Object{}
-	list := &unstructured.UnstructuredList{}
 	gvk, err := apiutil.GVKForObject(l, cl.Scheme())
 	if err != nil {
 		return nil, err
 	}
-	list.SetGroupVersionKind(gvk)
-	err = cl.List(ctx, list, options...)
+	gvk.Kind = fmt.Sprintf("%sList", gvk.Kind)
+	list, err := cl.Scheme().New(gvk)
+	if err != nil {
+		return nil, fmt.Errorf("unable to list objects of type %s: %w", gvk.Kind, err)
+	}
+
+	objList := list.(client.ObjectList)
+
+	err = cl.List(ctx, objList, options...)
 	if err != nil {
 		return ownedObjects, fmt.Errorf("error listing %T: %w", l, err)
 	}
-	for i := range list.Items {
-		ownedObjects[list.Items[i].GetUID()] = &list.Items[i]
+	objs, err := apimeta.ExtractList(objList)
+	if err != nil {
+		return ownedObjects, fmt.Errorf("error listing %T: %w", l, err)
+	}
+	for i := range objs {
+		typedObj, ok := objs[i].(T)
+		if !ok {
+			return ownedObjects, fmt.Errorf("error listing %T: %w", l, err)
+		}
+		ownedObjects[typedObj.GetUID()] = typedObj
 	}
 	return ownedObjects, nil
 }
@@ -155,7 +163,7 @@ func reconcileDesiredObjects(ctx context.Context, kubeClient client.Client, logg
 			op = result
 			return createOrUpdateErr
 		})
-		if crudErr != nil && errors.Is(crudErr, manifests.ImmutableChangeErr) {
+		if crudErr != nil && errors.As(crudErr, &manifests.ImmutableChangeErr) {
 			l.Error(crudErr, "detected immutable field change, trying to delete, new object will be created on next reconcile", "existing", existing.GetName())
 			delErr := kubeClient.Delete(ctx, existing)
 			if delErr != nil {

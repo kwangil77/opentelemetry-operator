@@ -1,21 +1,11 @@
 // Copyright The OpenTelemetry Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-License-Identifier: Apache-2.0
 
 package receivers
 
 import (
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 )
 
@@ -40,6 +30,15 @@ type kubeletStatsConfig struct {
 	ExtraMetadataLabels []string `mapstructure:"extra_metadata_labels"`
 	Metrics             metrics  `mapstructure:"metrics"`
 	AuthType            string   `mapstructure:"auth_type"`
+}
+
+func generateKubeletStatsEnvVars(_ logr.Logger, config kubeletStatsConfig) ([]corev1.EnvVar, error) {
+	// The documentation mentions that the K8S_NODE_NAME environment variable is required when using the serviceAccount auth type.
+	// Also, it mentions that it is a good idea to use it for the Read Only Endpoint. Added always to make it easier for users.
+	// https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/receiver/kubeletstatsreceiver/README.md
+	return []corev1.EnvVar{
+		{Name: "K8S_NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
+	}, nil
 }
 
 func generateKubeletStatsRbacRules(_ logr.Logger, config kubeletStatsConfig) ([]rbacv1.PolicyRule, error) {

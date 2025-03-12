@@ -59,7 +59,7 @@ endif
 
 START_KIND_CLUSTER ?= true
 
-KUBE_VERSION ?= 1.31
+KUBE_VERSION ?= 1.32
 KIND_CONFIG ?= kind-$(KUBE_VERSION).yaml
 KIND_CLUSTER_NAME ?= "otel-operator"
 
@@ -123,22 +123,23 @@ MIN_OPENSHIFT_VERSION ?= 4.12
 ## consistent with Linux.
 SED ?= $(shell which gsed 2>/dev/null || which sed)
 
-.PHONY: ensure-generate-is-noop
-ensure-generate-is-noop: VERSION=$(OPERATOR_VERSION)
-ensure-generate-is-noop: DOCKER_USER=open-telemetry
-ensure-generate-is-noop: set-image-controller generate bundle
-	@# on make bundle config/manager/kustomization.yaml includes changes, which should be ignored for the below check
-	@git restore config/manager/kustomization.yaml
+.PHONY: ensure-update-is-noop
+ensure-update-is-noop: VERSION=$(OPERATOR_VERSION)
+ensure-update-is-noop: DOCKER_USER=open-telemetry
+ensure-update-is-noop: set-image-controller update
 	@git diff -s --exit-code apis/v1alpha1/zz_generated.*.go || (echo "Build failed: a model has been changed but the generated resources aren't up to date. Run 'make generate' and update your PR." && exit 1)
 	@git diff -s --exit-code bundle config || (echo "Build failed: the bundle, config files has been changed but the generated bundle, config files aren't up to date. Run 'make bundle' and update your PR." && git diff && exit 1)
-	@git diff -s --exit-code docs/api.md || (echo "Build failed: the api.md file has been changed but the generated api.md file isn't up to date. Run 'make api-docs' and update your PR." && git diff && exit 1)
+	@git diff -s --exit-code docs/api || (echo "Build failed: a model has been changed but the generated docs/api/*.md files aren't up to date. Run 'make api-docs' and update your PR." && git diff && exit 1)
 
 .PHONY: all
 all: manager targetallocator operator-opamp-bridge
 
 # No lint here, as CI runs it separately
 .PHONY: ci
-ci: generate fmt vet test ensure-generate-is-noop
+ci: generate fmt vet test ensure-update-is-noop
+
+.PHONY: update
+update: generate manifests bundle api-docs reset
 
 # Build manager binary
 .PHONY: manager
@@ -206,12 +207,26 @@ add-rbac-permissions-to-operator: manifests kustomize
 	# This folder is ignored by .gitignore
 	mkdir -p config/rbac/extra-permissions-operator
 	cp -r tests/e2e-automatic-rbac/extra-permissions-operator/* config/rbac/extra-permissions-operator
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/clusterresourcequotas.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/cronjobs.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/daemonsets.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/events.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/extensions.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/namespaces.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/namespaces-status.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/nodes.yaml
-	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/nodes-stats.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/nodes-proxy.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/nodes-spec.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/pod-status.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/rbac.yaml
 	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/replicaset.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/replicationcontrollers.yaml
+	cd config/rbac && $(KUSTOMIZE) edit add patch --kind ClusterRole --name manager-role --path extra-permissions-operator/resourcequotas.yaml
+
+.PHONY: enable-targetallocator-cr
+enable-targetallocator-cr:
+	@$(MAKE) add-operator-arg OPERATOR_ARG='--feature-gates=operator.collector.targetallocatorcr'
+	cd config/crd && $(KUSTOMIZE) edit add resource bases/opentelemetry.io_targetallocators.yaml
 
 # Deploy controller in the current Kubernetes context, configured in ~/.kube/config
 .PHONY: deploy
@@ -243,7 +258,7 @@ test: envtest
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(KUBE_VERSION) -p path)" go test ${GOTEST_OPTS} ./...
 
 .PHONY: precommit
-precommit: generate fmt vet lint test ensure-generate-is-noop reset
+precommit: fmt vet lint test ensure-update-is-noop
 
 # Run go fmt against code
 .PHONY: fmt
@@ -321,6 +336,11 @@ e2e-prometheuscr: chainsaw
 .PHONY: e2e-targetallocator
 e2e-targetallocator: chainsaw
 	$(CHAINSAW) test --test-dir ./tests/e2e-targetallocator
+
+# Target allocator CR end-to-tests
+.PHONY: e2e-targetallocator-cr
+e2e-targetallocator-cr: chainsaw
+	$(CHAINSAW) test --test-dir ./tests/e2e-targetallocator-cr
 
 .PHONY: add-certmanager-permissions
 add-certmanager-permissions: 
@@ -472,11 +492,16 @@ CHLOGGEN ?= $(LOCALBIN)/chloggen
 GOLANGCI_LINT ?= $(LOCALBIN)/golangci-lint
 CHAINSAW ?= $(LOCALBIN)/chainsaw
 
-KUSTOMIZE_VERSION ?= v5.0.3
-CONTROLLER_TOOLS_VERSION ?= v0.16.1
-GOLANGCI_LINT_VERSION ?= v1.57.2
-KIND_VERSION ?= v0.20.0
-CHAINSAW_VERSION ?= v0.2.8
+# renovate: datasource=go depName=sigs.k8s.io/kustomize/kustomize/v5
+KUSTOMIZE_VERSION ?= v5.6.0
+# renovate: datasource=go depName=sigs.k8s.io/controller-tools/cmd/controller-gen
+CONTROLLER_TOOLS_VERSION ?= v0.17.1
+# renovate: datasource=github-releases depName=golangci/golangci-lint
+GOLANGCI_LINT_VERSION ?= v1.64.6
+# renovate: datasource=go depName=sigs.k8s.io/kind
+KIND_VERSION ?= v0.27.0
+# renovate: datasource=go depName=github.com/kyverno/chainsaw
+CHAINSAW_VERSION ?= v0.2.12
 
 .PHONY: install-tools
 install-tools: kustomize golangci-lint kind controller-gen envtest crdoc kind operator-sdk chainsaw
@@ -601,8 +626,13 @@ api-docs: crdoc kustomize
 	cp -r config/crd/* $$TMP_MANIFEST_DIR; \
 	$(MAKE) CRD_OPTIONS=$(CRD_OPTIONS),maxDescLen=1200 MANIFEST_DIR=$$TMP_MANIFEST_DIR/bases manifests ;\
 	TMP_DIR=$$(mktemp -d) ; \
-	$(KUSTOMIZE) build $$TMP_MANIFEST_DIR -o $$TMP_DIR/crd-output.yaml ;\
-	$(CRDOC) --resources $$TMP_DIR/crd-output.yaml --output docs/api.md ;\
+	$(KUSTOMIZE) build $$TMP_MANIFEST_DIR -o $$TMP_DIR ;\
+	mkdir -p docs/api ;\
+	for crdmanifest in $$TMP_DIR/*; do \
+	  filename="$$(basename -s .opentelemetry.io.yaml $$crdmanifest)" ;\
+	  filename="$${filename#apiextensions.k8s.io_v1_customresourcedefinition_}" ;\
+	  $(CRDOC) --resources $$crdmanifest --output docs/api/$$filename.md ;\
+	done;\
 	}
 
 
