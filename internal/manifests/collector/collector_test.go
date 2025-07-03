@@ -11,7 +11,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	otelColFeatureGate "go.opentelemetry.io/collector/featuregate"
 	v1 "k8s.io/api/authorization/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 
@@ -21,7 +20,6 @@ import (
 	"github.com/open-telemetry/opentelemetry-operator/internal/config"
 	"github.com/open-telemetry/opentelemetry-operator/internal/manifests"
 	irbac "github.com/open-telemetry/opentelemetry-operator/internal/rbac"
-	"github.com/open-telemetry/opentelemetry-operator/pkg/featuregate"
 )
 
 func TestNeedsCheckSaPermissions(t *testing.T) {
@@ -34,8 +32,10 @@ func TestNeedsCheckSaPermissions(t *testing.T) {
 			name: "should return true when all conditions are met",
 			params: manifests.Params{
 				ErrorAsWarning: true,
-				Config:         config.New(config.WithRBACPermissions(autoRbac.NotAvailable)),
-				Reviewer:       &mockReviewer{},
+				Config: config.Config{
+					CreateRBACPermissions: autoRbac.NotAvailable,
+				},
+				Reviewer: &mockReviewer{},
 				OtelCol: v1beta1.OpenTelemetryCollector{
 					Spec: v1beta1.OpenTelemetryCollectorSpec{
 						OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
@@ -50,8 +50,10 @@ func TestNeedsCheckSaPermissions(t *testing.T) {
 			name: "should return false when ErrorAsWarning is false",
 			params: manifests.Params{
 				ErrorAsWarning: false,
-				Config:         config.New(config.WithRBACPermissions(autoRbac.NotAvailable)),
-				Reviewer:       &mockReviewer{},
+				Config: config.Config{
+					CreateRBACPermissions: autoRbac.NotAvailable,
+				},
+				Reviewer: &mockReviewer{},
 				OtelCol: v1beta1.OpenTelemetryCollector{
 					Spec: v1beta1.OpenTelemetryCollectorSpec{
 						OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
@@ -66,8 +68,10 @@ func TestNeedsCheckSaPermissions(t *testing.T) {
 			name: "should return false when RBAC is available",
 			params: manifests.Params{
 				ErrorAsWarning: true,
-				Config:         config.New(config.WithRBACPermissions(autoRbac.Available)),
-				Reviewer:       &mockReviewer{},
+				Config: config.Config{
+					CreateRBACPermissions: autoRbac.Available,
+				},
+				Reviewer: &mockReviewer{},
 				OtelCol: v1beta1.OpenTelemetryCollector{
 					Spec: v1beta1.OpenTelemetryCollectorSpec{
 						OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
@@ -82,8 +86,10 @@ func TestNeedsCheckSaPermissions(t *testing.T) {
 			name: "should return false when Reviewer is nil",
 			params: manifests.Params{
 				ErrorAsWarning: true,
-				Config:         config.New(config.WithRBACPermissions(autoRbac.NotAvailable)),
-				Reviewer:       nil,
+				Config: config.Config{
+					CreateRBACPermissions: autoRbac.NotAvailable,
+				},
+				Reviewer: nil,
 				OtelCol: v1beta1.OpenTelemetryCollector{
 					Spec: v1beta1.OpenTelemetryCollectorSpec{
 						OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
@@ -98,8 +104,10 @@ func TestNeedsCheckSaPermissions(t *testing.T) {
 			name: "should return false when ServiceAccount is empty",
 			params: manifests.Params{
 				ErrorAsWarning: true,
-				Config:         config.New(config.WithRBACPermissions(autoRbac.NotAvailable)),
-				Reviewer:       &mockReviewer{},
+				Config: config.Config{
+					CreateRBACPermissions: autoRbac.Available,
+				},
+				Reviewer: &mockReviewer{},
 				OtelCol: v1beta1.OpenTelemetryCollector{
 					Spec: v1beta1.OpenTelemetryCollectorSpec{
 						OpenTelemetryCommonFields: v1beta1.OpenTelemetryCommonFields{
@@ -139,7 +147,6 @@ func TestBuild(t *testing.T) {
 		params          manifests.Params
 		expectedObjects int
 		wantErr         bool
-		featureGate     *otelColFeatureGate.Gate
 	}{
 		{
 			name: "deployment mode builds expected manifests",
@@ -206,7 +213,9 @@ func TestBuild(t *testing.T) {
 						},
 					},
 				},
-				Config: config.New(config.WithRBACPermissions(autoRbac.Available)),
+				Config: config.Config{
+					CreateRBACPermissions: autoRbac.Available,
+				},
 			},
 			expectedObjects: 7,
 			wantErr:         false,
@@ -225,11 +234,12 @@ func TestBuild(t *testing.T) {
 						},
 					},
 				},
-				Config: config.New(config.WithPrometheusCRAvailability(prometheus.Available)),
+				Config: config.Config{
+					PrometheusCRAvailability: prometheus.Available,
+				},
 			},
 			expectedObjects: 6,
 			wantErr:         false,
-			featureGate:     featuregate.PrometheusOperatorIsAvailable,
 		},
 		{
 			name: "metrics enabled adds service monitors",
@@ -261,11 +271,12 @@ func TestBuild(t *testing.T) {
 						},
 					},
 				},
-				Config: config.New(config.WithPrometheusCRAvailability(prometheus.Available)),
+				Config: config.Config{
+					PrometheusCRAvailability: prometheus.Available,
+				},
 			},
 			expectedObjects: 9,
 			wantErr:         false,
-			featureGate:     featuregate.PrometheusOperatorIsAvailable,
 		},
 		{
 			name: "check sa permissions",
@@ -300,24 +311,15 @@ func TestBuild(t *testing.T) {
 						},
 					},
 				},
-				Config: config.New(config.WithPrometheusCRAvailability(prometheus.Available)),
+				Config: config.Config{PrometheusCRAvailability: prometheus.Available},
 			},
 			expectedObjects: 9,
 			wantErr:         true,
-			featureGate:     featuregate.PrometheusOperatorIsAvailable,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.featureGate != nil {
-				err := otelColFeatureGate.GlobalRegistry().Set(tt.featureGate.ID(), true)
-				require.NoError(t, err)
-				defer func() {
-					err := otelColFeatureGate.GlobalRegistry().Set(tt.featureGate.ID(), false)
-					require.NoError(t, err)
-				}()
-			}
 
 			objects, err := Build(tt.params)
 			if tt.wantErr {
